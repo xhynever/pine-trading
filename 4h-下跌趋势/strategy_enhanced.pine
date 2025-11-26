@@ -1,0 +1,187 @@
+//@version=5
+import vegas_channel_lib as vclib
+
+strategy("4H Vegas Channel Strategy Enhanced",
+         overlay=true,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=20)
+
+// ============= 参数 =============
+SLOPE_THRESHOLD = input(25.0, "Slope Threshold (degrees)")
+SLOPE_PERIOD = input(28, "Slope Period")
+PRICE_ARRAY_THRESHOLD = input(8, "Price Array Threshold")
+SL_PERCENT = input(5.0, "Stop Loss %")
+TP1_PERCENT = input(10.0, "Take Profit 1 %")
+TP2_PERCENT = input(15.0, "Take Profit 2 %")
+TP3_PERCENT = input(25.0, "Take Profit 3 %")
+
+// ============= EMA计算 =============
+[ema12, ema144, ema156, ema565, ema676] = vclib.f_calculate_emas(12, 144, 156, 565, 676)
+
+// ============= 趋势检测 =============
+downtrend = vclib.f_is_downtrend(ema12, ema144, ema156, ema565, ema676)
+slope144 = vclib.f_calculate_slope(ema144, SLOPE_PERIOD)
+slope_low = vclib.f_slope_below_threshold(slope144, SLOPE_THRESHOLD)
+slope_high = vclib.f_slope_above_threshold(slope144, SLOPE_THRESHOLD)
+
+// ============= 状态变量 =============
+var bool duo1_marked = false
+var bool kong1_marked = false
+var float long_entry_price = 0.0
+var float short_entry_price = 0.0
+var array<float> highprice = array.new<float>()
+var array<float> lowprice = array.new<float>()
+var int bars_since_entry = 0
+
+// ============= 多单逻辑 =============
+// 标记duo1
+if not duo1_marked and downtrend and slope_low
+    duo1_marked := true
+
+// 开多单：ema12上穿ema144
+if duo1_marked and ta.crossover(ema12, ema144)
+    long_entry_price := close
+    strategy.entry("Long", strategy.long, qty=1)
+    duo1_marked := false
+    array.clear(highprice)
+    array.clear(lowprice)
+    bars_since_entry := 0
+
+// 记录价格并计算移动止损
+if strategy.position_size > 0 and not na(long_entry_price)
+    bars_since_entry += 1
+
+    if close > ema12
+        array.push(highprice, close)
+    else
+        array.push(lowprice, close)
+
+    // 移动止损
+    total_prices = array.size(highprice) + array.size(lowprice)
+    if total_prices > PRICE_ARRAY_THRESHOLD
+        if array.size(highprice) < array.size(lowprice)
+            trailing_sl = long_entry_price
+        else
+            sum_low = 0.0
+            for i = 0 to array.size(lowprice) - 1
+                sum_low += array.get(lowprice, i)
+            trailing_sl = sum_low / array.size(lowprice)
+
+        strategy.exit("SL", "Long", stop=trailing_sl)
+
+// ============= 空单逻辑 =============
+// 标记kong1
+if not kong1_marked and downtrend and slope_high
+    kong1_marked := true
+
+// 取消kong1标记条件
+if not downtrend
+    kong1_marked := false
+
+// 开空单
+if kong1_marked
+    if close == ema144 and strategy.position_size == 0
+        short_entry_price := close
+        strategy.entry("Short1", strategy.short, qty=0.5)
+        array.clear(highprice)
+        array.clear(lowprice)
+
+    if close == ema156
+        strategy.entry("Short2", strategy.short, qty=0.5)
+        kong1_marked := false
+
+// 记录价格并计算移动止损（空单）
+if strategy.position_size < 0 and not na(short_entry_price)
+    if close > ema12
+        array.push(highprice, close)
+    else
+        array.push(lowprice, close)
+
+    // 移动止损
+    total_prices = array.size(highprice) + array.size(lowprice)
+    if total_prices > PRICE_ARRAY_THRESHOLD
+        if array.size(highprice) > array.size(lowprice)
+            trailing_sl = short_entry_price
+        else
+            sum_high = 0.0
+            for i = 0 to array.size(highprice) - 1
+                sum_high += array.get(highprice, i)
+            trailing_sl = sum_high / array.size(highprice)
+
+        strategy.exit("SL", "Short1", stop=trailing_sl)
+        strategy.exit("SL", "Short2", stop=trailing_sl)
+
+// ============= 止盈止损 =============
+// 多单止盈
+if strategy.position_size > 0
+    if close > long_entry_price * (1 + TP3_PERCENT / 100)
+        strategy.close_position("Long", qty_percent=25)
+    else if close > long_entry_price * (1 + TP2_PERCENT / 100)
+        strategy.close_position("Long", qty_percent=25)
+    else if close > long_entry_price * (1 + TP1_PERCENT / 100)
+        strategy.close_position("Long", qty_percent=50)
+
+    sl = long_entry_price * (1 - SL_PERCENT / 100)
+    strategy.exit("SL_Long", "Long", stop=sl)
+
+// 空单止盈
+if strategy.position_size < 0
+    if close < short_entry_price * (1 - TP3_PERCENT / 100)
+        strategy.close_position("Short1", qty_percent=25)
+        strategy.close_position("Short2", qty_percent=25)
+    else if close < short_entry_price * (1 - TP2_PERCENT / 100)
+        strategy.close_position("Short1", qty_percent=25)
+        strategy.close_position("Short2", qty_percent=25)
+    else if close < short_entry_price * (1 - TP1_PERCENT / 100)
+        strategy.close_position("Short1", qty_percent=50)
+        strategy.close_position("Short2", qty_percent=50)
+
+    sl = short_entry_price * (1 + SL_PERCENT / 100)
+    strategy.exit("SL_Short", "Short1", stop=sl)
+    strategy.exit("SL_Short", "Short2", stop=sl)
+
+// ============= 绘制EMA =============
+plot(ema12, "EMA12", color.blue, linewidth=1)
+plot(ema144, "EMA144", color.red, linewidth=1)
+plot(ema156, "EMA156", color.orange, linewidth=1)
+plot(ema565, "EMA565", color.purple, linewidth=1)
+plot(ema676, "EMA676", color.teal, linewidth=1)
+
+// ============= 绘制信号 =============
+plotshape(duo1_marked, title="Long Signal (Duo1)", location=plotshape.abovebar,
+          color=color.green, size=size.small, text="L")
+plotshape(kong1_marked, title="Short Signal (Kong1)", location=plotshape.belowbar,
+          color=color.red, size=size.small, text="S")
+
+// ============= 信息面板 =============
+var table panel = na
+
+f_update_panel() =>
+    if na(panel)
+        panel := table.new(position.top_right, 3, 8, border_color=color.gray,
+                          border_width=1)
+
+    table.cell(panel, 0, 0, "策略信息", bgcolor=color.navy, text_color=color.white)
+    table.cell(panel, 1, 0, "值", bgcolor=color.navy, text_color=color.white)
+
+    table.cell(panel, 0, 1, "趋势信号", text_color=color.white)
+    table.cell(panel, 1, 1, downtrend ? "看空" : "中性", text_color=downtrend ? color.red : color.gray)
+
+    table.cell(panel, 0, 2, "斜率 (°)", text_color=color.white)
+    table.cell(panel, 1, 2, str.tostring(math.round(slope144, 2)), text_color=color.white)
+
+    table.cell(panel, 0, 3, "Duo1", text_color=color.white)
+    table.cell(panel, 1, 3, duo1_marked ? "✓" : "✗", text_color=duo1_marked ? color.green : color.red)
+
+    table.cell(panel, 0, 4, "Kong1", text_color=color.white)
+    table.cell(panel, 1, 4, kong1_marked ? "✓" : "✗", text_color=kong1_marked ? color.green : color.red)
+
+    table.cell(panel, 0, 5, "持仓", text_color=color.white)
+    pos_text = strategy.position_size > 0 ? "多" : (strategy.position_size < 0 ? "空" : "无")
+    table.cell(panel, 1, 5, pos_text, text_color=color.white)
+
+    table.cell(panel, 0, 6, "价格数组", text_color=color.white)
+    table.cell(panel, 1, 6, str.tostring(array.size(highprice) + array.size(lowprice)),
+              text_color=color.white)
+
+f_update_panel()

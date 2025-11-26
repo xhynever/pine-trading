@@ -1,0 +1,153 @@
+//@version=5
+library("BacktestLib", overlay=true)
+
+// ============= 回测统计结构 =============
+type BacktestStats
+    int total_trades = 0
+    int winning_trades = 0
+    int losing_trades = 0
+    float total_profit_loss = 0.0
+    float max_drawdown = 0.0
+    float win_rate = 0.0
+    float avg_profit_per_trade = 0.0
+
+// ============= 交易记录结构 =============
+type TradeRecord
+    string trade_id
+    float entry_price
+    float exit_price
+    float profit_loss
+    int bars_held
+    string trade_type  // "LONG" or "SHORT"
+
+// ============= 初始化回测统计 =============
+export f_init_backtest_stats() =>
+    BacktestStats.new()
+
+// ============= 记录交易 =============
+export f_record_trade(trades_arr, trade_id, entry_price, exit_price, trade_type) =>
+    profit_loss = trade_type == "LONG" ?
+                  (exit_price - entry_price) :
+                  (entry_price - exit_price)
+
+    trade = TradeRecord.new(trade_id, entry_price, exit_price, profit_loss, 1, trade_type)
+    array.push(trades_arr, trade)
+
+// ============= 计算胜率 =============
+export f_calculate_win_rate(trades_arr) =>
+    if array.size(trades_arr) == 0
+        0.0
+    else
+        winning_count = 0
+        for i = 0 to array.size(trades_arr) - 1
+            trade = array.get(trades_arr, i)
+            if trade.profit_loss > 0
+                winning_count += 1
+        float(winning_count) / float(array.size(trades_arr)) * 100
+
+// ============= 计算总收益 =============
+export f_calculate_total_profit(trades_arr) =>
+    total_profit = 0.0
+    for i = 0 to array.size(trades_arr) - 1
+        trade = array.get(trades_arr, i)
+        total_profit += trade.profit_loss
+    total_profit
+
+// ============= 计算平均利润 =============
+export f_calculate_avg_profit(trades_arr) =>
+    if array.size(trades_arr) == 0
+        0.0
+    else
+        f_calculate_total_profit(trades_arr) / float(array.size(trades_arr))
+
+// ============= 计算最大回撤 =============
+export f_calculate_max_drawdown(trades_arr) =>
+    if array.size(trades_arr) == 0
+        0.0
+    else
+        cumulative_profit = 0.0
+        max_cumulative = 0.0
+        max_drawdown = 0.0
+
+        for i = 0 to array.size(trades_arr) - 1
+            trade = array.get(trades_arr, i)
+            cumulative_profit += trade.profit_loss
+
+            if cumulative_profit > max_cumulative
+                max_cumulative := cumulative_profit
+
+            drawdown = max_cumulative - cumulative_profit
+            if drawdown > max_drawdown
+                max_drawdown := drawdown
+
+        max_drawdown
+
+// ============= 生成回测报告 =============
+export f_generate_backtest_report(trades_arr) =>
+    stats = BacktestStats.new()
+    stats.total_trades := array.size(trades_arr)
+    stats.total_profit_loss := f_calculate_total_profit(trades_arr)
+    stats.win_rate := f_calculate_win_rate(trades_arr)
+    stats.avg_profit_per_trade := f_calculate_avg_profit(trades_arr)
+    stats.max_drawdown := f_calculate_max_drawdown(trades_arr)
+
+    for i = 0 to array.size(trades_arr) - 1
+        trade = array.get(trades_arr, i)
+        if trade.profit_loss > 0
+            stats.winning_trades += 1
+        else
+            stats.losing_trades += 1
+
+    stats
+
+// ============= 性能指标：夏普比率 =============
+export f_calculate_sharpe_ratio(trades_arr, risk_free_rate=0.02) =>
+    if array.size(trades_arr) < 2
+        0.0
+    else
+        profits = array.new<float>()
+        for i = 0 to array.size(trades_arr) - 1
+            trade = array.get(trades_arr, i)
+            array.push(profits, trade.profit_loss)
+
+        avg_return = f_calculate_avg_profit(trades_arr)
+        variance = 0.0
+
+        for i = 0 to array.size(profits) - 1
+            profit = array.get(profits, i)
+            variance += math.pow(profit - avg_return, 2)
+
+        variance := variance / float(array.size(profits))
+        std_dev = math.sqrt(variance)
+
+        if std_dev == 0
+            0.0
+        else
+            (avg_return - risk_free_rate) / std_dev
+
+// ============= 性能指标：盈亏比 =============
+export f_calculate_profit_factor(trades_arr) =>
+    gross_profit = 0.0
+    gross_loss = 0.0
+
+    for i = 0 to array.size(trades_arr) - 1
+        trade = array.get(trades_arr, i)
+        if trade.profit_loss > 0
+            gross_profit += trade.profit_loss
+        else
+            gross_loss += math.abs(trade.profit_loss)
+
+    if gross_loss == 0
+        if gross_profit > 0 then 999.0 else 0.0
+    else
+        gross_profit / gross_loss
+
+// ============= 打印回测摘要 =============
+export f_print_backtest_summary(stats) =>
+    var string summary = ""
+    summary := "总交易数: " + str.tostring(stats.total_trades) + "\n" +
+              "胜率: " + str.tostring(math.round(stats.win_rate, 2)) + "%\n" +
+              "总收益: " + str.tostring(math.round(stats.total_profit_loss, 2)) + "\n" +
+              "平均利润: " + str.tostring(math.round(stats.avg_profit_per_trade, 2)) + "\n" +
+              "最大回撤: " + str.tostring(math.round(stats.max_drawdown, 2))
+    summary
