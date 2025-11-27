@@ -15,13 +15,36 @@ ema676 = ta.ema(close, 676)
 downtrend_signal = ema12 < math.min(ema144, ema156) and
                    math.min(ema144, ema156) < math.min(ema565, ema676)
 
-// ============= EMA144价差计算 =============
-ema144_current = ema144
-ema144_84bars_ago = ema144[84]
-ema144_price_diff_percent = ((ema144_current - ema144_84bars_ago) / math.abs(ema144_84bars_ago)) * 100
+// ============= 斜率计算函数 =============
+f_calculate_slope(source, period) =>
+    if bar_index < period
+        0.0
+    else
+        x_sum = 0.0
+        y_sum = 0.0
+        xy_sum = 0.0
+        x2_sum = 0.0
 
-price_diff_high = math.abs(ema144_price_diff_percent) > 10
-price_diff_low = math.abs(ema144_price_diff_percent) <= 10
+        for i = 0 to period - 1
+            x = float(i)
+            y = source[i]
+            x_sum += x
+            y_sum += y
+            xy_sum += x * y
+            x2_sum += x * x
+
+        n = float(period)
+        numerator = n * xy_sum - x_sum * y_sum
+        denominator = n * x2_sum - x_sum * x_sum
+
+        slope = denominator != 0 ? numerator / denominator : 0.0
+        degrees = math.atan(slope) * 180.0 / math.pi
+        degrees
+
+// ============= 斜率计算 =============
+ema144_slope = f_calculate_slope(ema144, 28)
+slope_below_25 = math.abs(ema144_slope) < 25
+slope_above_25 = ema144_slope > 25
 
 // ============= 信号标记变量 =============
 var bool duo_signal_ready = false
@@ -64,7 +87,7 @@ if strategy.position_size != 0
                 trailing_stop := highprice_sum / array.size(highprice)
 
 // ============= 多单逻辑 =============
-if not duo_signal_ready and downtrend_signal and price_diff_low
+if not duo_signal_ready and downtrend_signal and slope_below_25
     duo_signal_ready := true
 
 if duo_signal_ready and ta.crossover(ema12, ema144) and strategy.position_size == 0
@@ -77,7 +100,7 @@ if long_entered and strategy.position_size != 0
     long_entered := false
 
 // ============= 空单逻辑 =============
-if not kong_signal_ready and downtrend_signal and price_diff_high
+if not kong_signal_ready and downtrend_signal and slope_above_25
     kong_signal_ready := true
 
 if kong_signal_ready and strategy.position_size == 0
@@ -127,9 +150,6 @@ plot(ema144, "EMA144", color.red, linewidth=1)
 plot(ema156, "EMA156", color.orange, linewidth=1)
 plot(ema565, "EMA565", color.purple, linewidth=1)
 plot(ema676, "EMA676", color.teal, linewidth=1)
-
-// EMA144价差可视化
-plot(ema144_price_diff_percent, "EMA144 Price Diff %", color.gray, linewidth=1)
 
 // 标记入场和平仓
 plotshape(long_entered, title="Long Entry", style=shape.circle, location=location.abovebar, color=color.green, size=size.small)
