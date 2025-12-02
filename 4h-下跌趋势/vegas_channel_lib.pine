@@ -11,7 +11,56 @@ export f_is_downtrend(ema12, ema144, ema156, ema565, ema676) =>
     ema12 < math.min(ema144, ema156) and
     math.min(ema144, ema156) < math.min(ema565, ema676)
 
-// ============= 斜率计算 =============
+// ============= 循环队列 =============
+type CircularQueue
+    array<float> data
+    int capacity
+    int head
+    int size
+
+export f_create_queue(capacity) =>
+    queue = CircularQueue.new()
+    queue.data := array.new<float>(capacity)
+    queue.capacity := capacity
+    queue.head := 0
+    queue.size := 0
+    queue
+
+export f_queue_push(queue, value) =>
+    if queue.size < queue.capacity
+        array.set(queue.data, queue.size, value)
+        queue.size += 1
+    else
+        array.set(queue.data, queue.head, value)
+        queue.head := (queue.head + 1) % queue.capacity
+
+export f_queue_get(queue, index) =>
+    if index < 0 or index >= queue.size
+        0.0
+    else
+        idx = (queue.head + index) % queue.capacity
+        array.get(queue.data, idx)
+
+export f_queue_size(queue) =>
+    queue.size
+
+export f_queue_max(queue) =>
+    max_val = 0.0
+    for i = 0 to queue.size - 1
+        val = f_queue_get(queue, i)
+        if val > max_val
+            max_val := val
+    max_val
+
+export f_queue_min(queue) =>
+    min_val = 999999.0
+    for i = 0 to queue.size - 1
+        val = f_queue_get(queue, i)
+        if val < min_val
+            min_val := val
+    min_val
+
+// ============= 斜率计算（线性回归） =============
 export f_calculate_slope(source, period) =>
     if bar_index < period
         0.0

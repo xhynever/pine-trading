@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"d:\\work\\pine-trading\\4h-下跌趋势\"\" 2>/dev/null || dir \"d:workpine-trading4h-下跌趋势\"\")",
+      "Bash(dir:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
