@@ -80,11 +80,11 @@ f_check_price_near_ema(float price, float ema, float offset_percent) =>
 
 // 检查价格是否在多个EMA范围内 (用于空单)
 f_check_entry_price_short(float price, float ema144, float ema150, float ema156, float ema565, float ema600, float offset_percent) =>
-    f_check_price_near_ema(price, ema144, offset_percent) or
-    f_check_price_near_ema(price, ema150, offset_percent) or
-    f_check_price_near_ema(price, ema156, offset_percent) or
-    f_check_price_near_ema(price, ema565, offset_percent) or
-    f_check_price_near_ema(price, ema600, offset_percent)
+    (f_check_price_near_ema(price, ema144, offset_percent) or
+     f_check_price_near_ema(price, ema150, offset_percent) or
+     f_check_price_near_ema(price, ema156, offset_percent) or
+     f_check_price_near_ema(price, ema565, offset_percent) or
+     f_check_price_near_ema(price, ema600, offset_percent))
 
 // ============================================================================
 // 第二部分: 参数定义
