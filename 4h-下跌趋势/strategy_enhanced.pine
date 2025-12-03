@@ -290,58 +290,55 @@ plotshape(kong1_marked, title="Short Signal (Kong1)", location=location.belowbar
 
 var table panel = na
 
-f_update_panel() =>
-    if na(panel)
-        panel := table.new(position.top_right, 2, 12, border_color=color.gray, border_width=1)
+// 初始化或更新信息面板
+if na(panel)
+    panel := table.new(position.top_right, 2, 12, border_color=color.gray, border_width=1)
 
-    // 标题
-    table.cell(panel, 0, 0, "4H Vegas Channel", bgcolor=color.navy, text_color=color.white, width=50)
-    table.cell(panel, 1, 0, "值", bgcolor=color.navy, text_color=color.white, width=50)
+// 标题
+table.cell(panel, 0, 0, "4H Vegas Channel", bgcolor=color.navy, text_color=color.white, width=50)
+table.cell(panel, 1, 0, "值", bgcolor=color.navy, text_color=color.white, width=50)
 
-    // 第1行: 4H趋势
-    table.cell(panel, 0, 1, "趋势(4H)", text_color=color.white)
-    table.cell(panel, 1, 1, downtrend ? "看空" : "中性", text_color=downtrend ? color.red : color.gray)
+// 第1行: 4H趋势
+table.cell(panel, 0, 1, "趋势(4H)", text_color=color.white)
+table.cell(panel, 1, 1, downtrend ? "看空" : "中性", text_color=downtrend ? color.red : color.gray)
 
-    // 第2行: EMA144斜率
-    table.cell(panel, 0, 2, "EMA144斜率", text_color=color.white)
-    table.cell(panel, 1, 2, str.tostring(math.round(slope144, 2)) + "°", text_color=color.white)
+// 第2行: EMA144斜率
+table.cell(panel, 0, 2, "EMA144斜率", text_color=color.white)
+table.cell(panel, 1, 2, str.tostring(math.round(slope144, 2)) + "°", text_color=color.white)
 
-    // 第3行: Duo1状态
-    table.cell(panel, 0, 3, "Duo1状态", text_color=color.white)
-    table.cell(panel, 1, 3, duo1_marked ? "✓ 标记" : "✗ 等待", text_color=duo1_marked ? color.green : color.red)
+// 第3行: Duo1状态
+table.cell(panel, 0, 3, "Duo1状态", text_color=color.white)
+table.cell(panel, 1, 3, duo1_marked ? "✓ 标记" : "✗ 等待", text_color=duo1_marked ? color.green : color.red)
 
-    // 第4行: Kong1状态
-    table.cell(panel, 0, 4, "Kong1状态", text_color=color.white)
-    table.cell(panel, 1, 4, kong1_marked ? "✓ 标记" : "✗ 等待", text_color=kong1_marked ? color.green : color.red)
+// 第4行: Kong1状态
+table.cell(panel, 0, 4, "Kong1状态", text_color=color.white)
+table.cell(panel, 1, 4, kong1_marked ? "✓ 标记" : "✗ 等待", text_color=kong1_marked ? color.green : color.red)
 
-    // 第5行: EMA12交叉次数
-    table.cell(panel, 0, 5, "EMA12上穿", text_color=color.white)
-    table.cell(panel, 1, 5, str.tostring(ema12_cross_count) + "次", text_color=color.white)
+// 第5行: EMA12交叉次数
+table.cell(panel, 0, 5, "EMA12上穿", text_color=color.white)
+table.cell(panel, 1, 5, str.tostring(ema12_cross_count) + "次", text_color=color.white)
 
-    // 第6行: 持仓方向
-    table.cell(panel, 0, 6, "持仓", text_color=color.white)
-    pos_text = strategy.position_size > 0 ? "多头" : (strategy.position_size < 0 ? "空头" : "无")
-    pos_color = strategy.position_size > 0 ? color.green : (strategy.position_size < 0 ? color.red : color.gray)
-    table.cell(panel, 1, 6, pos_text, text_color=pos_color)
+// 第6行: 持仓方向
+table.cell(panel, 0, 6, "持仓", text_color=color.white)
+pos_text = strategy.position_size > 0 ? "多头" : (strategy.position_size < 0 ? "空头" : "无")
+pos_color = strategy.position_size > 0 ? color.green : (strategy.position_size < 0 ? color.red : color.gray)
+table.cell(panel, 1, 6, pos_text, text_color=pos_color)
 
-    // 第7行: 入场价
-    table.cell(panel, 0, 7, "入场价", text_color=color.white)
-    entry_price_display = long_entry_price > 0 ? long_entry_price : short_entry_price
-    entry_text = strategy.position_size != 0 ? str.tostring(math.round(entry_price_display, 4)) : "-"
-    table.cell(panel, 1, 7, entry_text, text_color=color.white)
+// 第7行: 入场价
+table.cell(panel, 0, 7, "入场价", text_color=color.white)
+entry_price_display = long_entry_price > 0 ? long_entry_price : short_entry_price
+entry_text = strategy.position_size != 0 ? str.tostring(math.round(entry_price_display, 4)) : "-"
+table.cell(panel, 1, 7, entry_text, text_color=color.white)
 
-    // 第8行: 持有K线数
-    table.cell(panel, 0, 8, "持有K线", text_color=color.white)
-    table.cell(panel, 1, 8, str.tostring(bars_since_entry), text_color=color.white)
+// 第8行: 持有K线数
+table.cell(panel, 0, 8, "持有K线", text_color=color.white)
+table.cell(panel, 1, 8, str.tostring(bars_since_entry), text_color=color.white)
 
-    // 第9行: 价格记录数
-    table.cell(panel, 0, 9, "价格记录", text_color=color.white)
-    table.cell(panel, 1, 9, str.tostring(array.size(highprice) + array.size(lowprice)), text_color=color.white)
+// 第9行: 价格记录数
+table.cell(panel, 0, 9, "价格记录", text_color=color.white)
+table.cell(panel, 1, 9, str.tostring(array.size(highprice) + array.size(lowprice)), text_color=color.white)
 
-    // 第10行: 日线趋势
-    table.cell(panel, 0, 10, "日线趋势", text_color=color.white)
-    downtrend_d = ema12_d < math.min(ema144_d, ema156_d)
-    table.cell(panel, 1, 10, downtrend_d ? "看空" : "中性", text_color=downtrend_d ? color.red : color.gray)
-
-// 更新信息面板
-f_update_panel()
+// 第10行: 日线趋势
+table.cell(panel, 0, 10, "日线趋势", text_color=color.white)
+downtrend_d = ema12_d < math.min(ema144_d, ema156_d)
+table.cell(panel, 1, 10, downtrend_d ? "看空" : "中性", text_color=downtrend_d ? color.red : color.gray)
