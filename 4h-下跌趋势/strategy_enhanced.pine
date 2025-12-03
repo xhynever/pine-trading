@@ -326,8 +326,8 @@ f_update_panel() =>
 
     // 第7行: 入场价
     table.cell(panel, 0, 7, "入场价", text_color=color.white)
-    entry_text = strategy.position_size != 0 ?
-        str.tostring(math.round(long_entry_price > 0 ? long_entry_price : short_entry_price, 4)) : "-"
+    entry_text = (strategy.position_size != 0 ?
+        str.tostring(math.round(long_entry_price > 0 ? long_entry_price : short_entry_price, 4)) : "-")
     table.cell(panel, 1, 7, entry_text, text_color=color.white)
 
     // 第8行: 持有K线数
