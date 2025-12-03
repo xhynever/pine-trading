@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(ls -la \"d:\\work\\pine-trading\\4h-下跌趋势\"\" 2>/dev/null || dir \"d:workpine-trading4h-下跌趋势\"\")",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nrefactor: optimize strategy_enhanced.pine and add comprehensive documentation\n\n## Changes:\n\n### Code Optimization (strategy_enhanced.pine)\n- Refactored code into 9 logical sections for better maintainability\n- Extracted repeated code into reusable functions:\n  * f_record_price() - Price recording logic\n  * f_calculate_trailing_sl() - Trailing stop loss calculation\n  * f_check_price_near_ema() - Price range validation\n  * f_check_entry_price_short() - Multi-EMA entry validation\n- Organized parameters by functional groups (Trend/Entry/Risk/Advanced)\n- Improved inline comments and clarity\n\n### Documentation (NEW FILES)\n- **FLOWCHART.md** (368 lines): Complete process flows\n  * 10-section flowchart with decision trees\n  * State machine transitions\n  * Typical trade examples\n  * Anomaly handling guide\n  \n- **ARCHITECTURE.md** (438 lines): Architecture and maintenance guide\n  * Module explanations and data structures\n  * Algorithm analysis with complexity notes\n  * Signal flow documentation\n  * Extension points and maintenance checklist\n\n### README Updates\n- Added documentation navigation table\n- Clarified code structure with 9-part breakdown\n- Enhanced parameter documentation with ranges and adjustment guide\n- Added detailed modification examples\n- Clear references to new documentation files\n\n## Benefits:\n✅ Code is now self-documenting with clear section boundaries\n✅ Easy to understand logic flow from FLOWCHART.md\n✅ Quick to modify/extend from ARCHITECTURE.md\n✅ No external libraries needed (fully inlined)\n✅ Backward compatible - same functionality, better maintainability\n\n🧠 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []
