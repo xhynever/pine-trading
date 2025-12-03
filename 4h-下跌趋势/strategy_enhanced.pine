@@ -1,51 +1,160 @@
 //@version=5
-import vegas_channel_lib as vclib
-
 strategy("4H Vegas Channel Strategy Enhanced v2.0",
          overlay=true,
          default_qty_type=strategy.percent_of_equity,
          default_qty_value=20)
 
-// ============= 参数 =============
-SLOPE_THRESHOLD = input(15.0, "EMA144 Slope Threshold (%)")
-SLOPE_PERIOD = input(28, "Slope Period")
-PRICE_ARRAY_THRESHOLD = input(8, "Price Array Threshold")
-QUEUE_CAPACITY = input(48, "Circular Queue Capacity")
-SL_PERCENT = input(5.0, "Stop Loss %")
-TP1_PERCENT = input(10.0, "Take Profit 1 %")
-TP2_PERCENT = input(15.0, "Take Profit 2 %")
-TP3_PERCENT = input(25.0, "Take Profit 3 %")
-OFFSET_PERCENT = input(2.0, "Entry Price Offset %")
+// ============================================================================
+// 第一部分: 内联库函数
+// ============================================================================
 
-// ============= 日线EMA参考 =============
+// 计算5条EMA指标
+f_calculate_emas(int len12, int len144, int len156, int len565, int len676) =>
+    [ta.ema(close, len12), ta.ema(close, len144), ta.ema(close, len156), ta.ema(close, len565), ta.ema(close, len676)]
+
+// 检测空头趋势: ema12 < min(ema144, ema156) < min(ema565, ema676)
+f_is_downtrend(float ema12, float ema144, float ema156, float ema565, float ema676) =>
+    ema12 < math.min(ema144, ema156) and math.min(ema144, ema156) < math.min(ema565, ema676)
+
+// 计算线性回归斜率 (转换为角度)
+f_calculate_slope(float source, int period) =>
+    if bar_index < period
+        0.0
+    else
+        x_sum = 0.0
+        y_sum = 0.0
+        xy_sum = 0.0
+        x2_sum = 0.0
+        for i = 0 to period - 1
+            x = float(i)
+            y = source[i]
+            x_sum += x
+            y_sum += y
+            xy_sum += x * y
+            x2_sum += x * x
+        n = float(period)
+        numerator = n * xy_sum - x_sum * y_sum
+        denominator = n * x2_sum - x_sum * x_sum
+        slope = denominator != 0 ? numerator / denominator : 0.0
+        math.atan(slope) * 180.0 / math.pi
+
+// 记录价格到数组
+f_record_price(float price, float threshold, array<float> high_arr, array<float> low_arr, int capacity) =>
+    if price > threshold
+        array.push(high_arr, price)
+    else
+        array.push(low_arr, price)
+
+    // 循环队列管理: 超过容量则删除最早数据
+    if array.size(high_arr) > capacity
+        array.shift(high_arr)
+    if array.size(low_arr) > capacity
+        array.shift(low_arr)
+
+// 计算移动止损
+f_calculate_trailing_sl(bool is_long, float entry_price, array<float> high_arr, array<float> low_arr, int threshold) =>
+    total_count = array.size(high_arr) + array.size(low_arr)
+    if total_count <= threshold
+        entry_price
+    else
+        if is_long
+            if array.size(high_arr) < array.size(low_arr)
+                entry_price
+            else
+                sum = 0.0
+                for i = 0 to array.size(low_arr) - 1
+                    sum += array.get(low_arr, i)
+                sum / array.size(low_arr)
+        else
+            if array.size(high_arr) > array.size(low_arr)
+                entry_price
+            else
+                sum = 0.0
+                for i = 0 to array.size(high_arr) - 1
+                    sum += array.get(high_arr, i)
+                sum / array.size(high_arr)
+
+// 检查价格是否接近指定EMA (容差范围)
+f_check_price_near_ema(float price, float ema, float offset_percent) =>
+    price >= ema * (1 - offset_percent / 100) and price <= ema * (1 + offset_percent / 100)
+
+// 检查价格是否在多个EMA范围内 (用于空单)
+f_check_entry_price_short(float price, float ema144, float ema150, float ema156, float ema565, float ema600, float offset_percent) =>
+    f_check_price_near_ema(price, ema144, offset_percent) or
+    f_check_price_near_ema(price, ema150, offset_percent) or
+    f_check_price_near_ema(price, ema156, offset_percent) or
+    f_check_price_near_ema(price, ema565, offset_percent) or
+    f_check_price_near_ema(price, ema600, offset_percent)
+
+// ============================================================================
+// 第二部分: 参数定义
+// ============================================================================
+
+// 趋势与斜率参数
+SLOPE_THRESHOLD = input(15.0, "EMA144 Slope Threshold (°)", group="Trend Parameters")
+SLOPE_PERIOD = input(28, "Slope Calculation Period", group="Trend Parameters")
+
+// 开仓参数
+ENTRY_QTY = input(0.1, "Entry Position Size", group="Entry Parameters")
+OFFSET_PERCENT = input(2.0, "Entry Price Offset (%)", group="Entry Parameters")
+PRICE_ARRAY_THRESHOLD = input(8, "Price Collection Threshold (bars)", group="Entry Parameters")
+
+// 止损止盈参数
+SL_PERCENT = input(5.0, "Stop Loss (%)", group="Risk Management")
+TP1_PERCENT = input(10.0, "Take Profit 1 (%)", group="Risk Management")
+TP2_PERCENT = input(15.0, "Take Profit 2 (%)", group="Risk Management")
+TP3_PERCENT = input(25.0, "Take Profit 3 (%)", group="Risk Management")
+
+// 高级参数
+QUEUE_CAPACITY = input(48, "Array Queue Capacity", group="Advanced")
+
+// ============================================================================
+// 第三部分: 指标计算
+// ============================================================================
+
+// 日线EMA (参考用)
 ema12_d = request.security(syminfo.tickerid, "D", ta.ema(close, 12))
 ema144_d = request.security(syminfo.tickerid, "D", ta.ema(close, 144))
 ema156_d = request.security(syminfo.tickerid, "D", ta.ema(close, 156))
 ema565_d = request.security(syminfo.tickerid, "D", ta.ema(close, 565))
 ema676_d = request.security(syminfo.tickerid, "D", ta.ema(close, 676))
 
-// ============= 4H EMA计算 =============
-[ema12, ema144, ema156, ema565, ema676] = vclib.f_calculate_emas(12, 144, 156, 565, 676)
+// 4H主EMA (5条)
+[ema12, ema144, ema156, ema565, ema676] = f_calculate_emas(12, 144, 156, 565, 676)
+
+// 4H额外EMA (用于空单)
 ema150 = ta.ema(close, 150)
 ema600 = ta.ema(close, 600)
 
-// ============= 趋势检测 =============
-downtrend = vclib.f_is_downtrend(ema12, ema144, ema156, ema565, ema676)
-slope144 = vclib.f_calculate_slope(ema144, SLOPE_PERIOD)
-slope_low = math.abs(slope144) < SLOPE_THRESHOLD
-slope_high = math.abs(slope144) > SLOPE_THRESHOLD
+// 趋势判断
+downtrend = f_is_downtrend(ema12, ema144, ema156, ema565, ema676)
 
-// ============= 状态变量 =============
-var bool duo1_marked = false
-var bool kong1_marked = false
-var int ema12_cross_count = 0
-var float long_entry_price = 0.0
-var float short_entry_price = 0.0
-var array<float> highprice = array.new<float>()
-var array<float> lowprice = array.new<float>()
-var int bars_since_entry = 0
-var bool prev_crossover = false
-var bool prev_crossunder = false
+// 斜率计算
+slope144 = f_calculate_slope(ema144, SLOPE_PERIOD)
+slope_low = math.abs(slope144) < SLOPE_THRESHOLD   // 斜率低: 适合多头
+slope_high = math.abs(slope144) > SLOPE_THRESHOLD  // 斜率高: 适合空头
+
+// ============================================================================
+// 第四部分: 状态变量
+// ============================================================================
+
+// 信号标记
+var bool duo1_marked = false       // Duo1多单信号标记
+var bool kong1_marked = false      // Kong1空单信号标记
+var int ema12_cross_count = 0      // EMA12上穿EMA144计数
+
+// 头寸信息
+var float long_entry_price = 0.0   // 多单入场价
+var float short_entry_price = 0.0  // 空单入场价
+
+// 价格记录数组
+var array<float> highprice = array.new<float>()  // 高于EMA12的收盘价
+var array<float> lowprice = array.new<float>()   // 低于EMA12的收盘价
+
+// 时间追踪
+var int bars_since_entry = 0       // 入场后经过的K线数
+var bool prev_crossover = false    // 前一根是否EMA12上穿
+var bool prev_crossunder = false   // 前一根是否现价下穿 (备用)
 
 // ============= EMA12上穿EMA144计数 =============
 if ta.crossover(ema12, ema144)

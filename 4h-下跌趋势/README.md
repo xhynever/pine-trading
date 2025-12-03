@@ -4,141 +4,220 @@
 
 基于4小时维加斯通道的自动化交易策略，使用Pine Script v5编写，适用于TradingView。该策略包含完整的多单和空单逻辑，支持自适应移动止损和分层止盈。
 
+## 📚 文档导航
+
+| 文档 | 用途 |
+|------|------|
+| **[FLOWCHART.md](FLOWCHART.md)** | 📊 **完整流程图** - 理解策略逻辑的最佳入门文档 |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | 🏗️ **架构设计文档** - 代码结构、扩展指南、维护清单 |
+| **[README.md](README.md)** | 📖 **本文件** - 项目概述、使用方法、参数说明 |
+| **QUICKSTART.md** | ⚡ **快速开始** - 5分钟快速上手 |
+| **VERSIONS.md** | 📝 **版本历史** - 版本更新日志 |
+
+> **快速查找**:
+> - 🤔 不懂策略逻辑？→ 看 [FLOWCHART.md](FLOWCHART.md)
+> - 🔧 想修改代码？→ 看 [ARCHITECTURE.md](ARCHITECTURE.md)
+> - ⏱️ 没时间了？→ 看 QUICKSTART.md
+> - ❓ 其他问题？→ 看下方 FAQ 或在 Issues 提问
+
 ## 文件说明
 
-### 1. `strategy.pine` - 基础策略
+### 核心策略文件
+
+#### 1. `strategy_enhanced.pine` - 增强版策略 (推荐使用)
+**状态**: ✅ 已优化 v2.0
+
+包含所有核心逻辑，代码已重构优化。该版本特点：
+- ✅ 内联库函数，无需发布库
+- ✅ 分9个部分清晰组织：函数库、参数、指标、状态、信号、持仓、止盈止损、可视化、面板
+- ✅ 提取重复代码为可重用函数
+- ✅ 参数按功能分组 (Trend/Entry/Risk/Advanced)
+- ✅ 详细的注释说明
+- ✅ 实时信息面板显示策略状态
+
+**代码结构** (348行):
+```
+第一部分: 内联库函数 (41行)
+  ├─ f_calculate_emas()       - EMA计算
+  ├─ f_is_downtrend()         - 趋势检测
+  ├─ f_calculate_slope()      - 斜率计算
+  ├─ f_record_price()         - 价格记录
+  ├─ f_calculate_trailing_sl()- 移动止损
+  └─ f_check_price_near_ema() - 价格检查
+第二部分: 参数定义 (19行)     - 按功能分组的参数
+第三部分: 指标计算 (23行)     - EMA、趋势、斜率
+第四部分: 状态变量 (18行)     - 信号、头寸、数组
+第五部分: 信号与开仓 (53行)   - Duo1/Kong1逻辑
+第六部分: 持仓管理 (25行)     - 价格记录和止损
+第七部分: 止盈止损 (29行)     - 分层止盈执行
+第八部分: 可视化 (14行)       - EMA和信号绘制
+第九部分: 信息面板 (57行)     - 实时显示面板
+```
+
+#### 2. `strategy.pine` - 基础策略 (参考版本)
 基础版本的完整策略实现，包含所有核心逻辑。
 
-下面主要操作是基于4h的走势图。除非特殊强调，才使用额外说明的。
-记录日线的EMA指标（EMA12, EMA144, EMA156, EMA565, EMA676） 1d
 **功能：**
-
-- 计算5条EMA指标（EMA12, EMA144, EMA156, EMA565, EMA676） 4h
-- 检测空头趋势信号。
+- 计算5条EMA指标（12, 144, 156, 565, 676）- 4小时级别
+- 检测空头趋势信号
 - 多单开单逻辑（Duo1信号）
 - 空单开单逻辑（Kong1信号）
 - 自适应移动止损
-- 分层止盈管理
+- 分层止盈管理（10%、15%、25%）
 
-### 2. `strategy_enhanced.pine` - 增强版策略
-集成了库函数的增强版本，提供更多参数定制和信息面板。
+#### 3. `vegas_channel_lib.pine` - 维加斯通道库 (已集成)
+可重用的函数库，所有函数已内联到 `strategy_enhanced.pine` 中。
 
-**改进：**
-- 导入和使用vegas_channel_lib库
-- 可调整的策略参数
-- 实时信息面板显示策略状态
-- 更好的代码组织和可维护性
-
-### 3. `vegas_channel_lib.pine` - 维加斯通道库
-可重用的函数库，提供所有核心计算功能。
-
-**包含的导出函数：**
+**已集成的函数：**
 - `f_calculate_emas()` - 计算所有EMA指标
 - `f_is_downtrend()` - 检测空头趋势
-- `f_calculate_slope()` - 计算斜率（线性回归）：
-这个斜率，变更。在计算时，采用循环队列。容量是48根。
-向队列插入时，记录最大值，最小值。 
-计算斜率时，记录最小值和最大值的波动。
-- `f_slope_below_threshold()` - 判断斜率是否小于阈值：
-- `f_slope_above_threshold()` - 判断斜率是否大于阈值：
-- `f_record_price()` - 记录收盘价到数组
-- `f_calculate_trailing_stop()` - 计算移动止损
-- `f_get_take_profit_levels()` - 获取止盈价位
-- `f_get_stop_loss()` - 获取止损价位
+- `f_calculate_slope()` - 计算斜率（线性回归）
 
-### 4. `backtest_lib.pine` - 回测函数库
-提供策略性能分析和回测统计的工具函数。
-
-**包含的导出函数：**
-- `f_init_backtest_stats()` - 初始化统计对象
-- `f_record_trade()` - 记录单笔交易
-- `f_calculate_win_rate()` - 计算胜率
-- `f_calculate_total_profit()` - 计算总收益
-- `f_calculate_avg_profit()` - 计算平均利润
-- `f_calculate_max_drawdown()` - 计算最大回撤
-- `f_calculate_sharpe_ratio()` - 计算夏普比率
-- `f_calculate_profit_factor()` - 计算盈亏比
-- `f_generate_backtest_report()` - 生成回测报告
+#### 4. `backtest_lib.pine` - 回测库 (可选)
+提供策略性能分析的工具函数。
 
 
 ## 核心策略逻辑
 
+> 💡 **详细流程图请参考 [FLOWCHART.md](FLOWCHART.md)** - 包含完整的状态机转换图、决策点和示例交易
+
 ### 1. 空头趋势检测
+
 ```
 条件: ema12 < min(ema144, ema156) < min(ema565, ema676)
 ```
-辅助参数
-EMA12上穿EMA144。 第几次上穿，需要记录。  参数为 scema
-现价上穿ema144
-现价上穿ema565
-4h ema150,4h ema600
-注：这里的现价应该包括，4h的最高点，最低点。
+
+三层过滤器：
+1. **快线低于中线**: EMA12 < min(EMA144, EMA156) → 看空
+2. **中线低于慢线**: min(EMA144, EMA156) < min(EMA565, EMA676) → 强看空
+3. **两条件同时成立** → 确认空头趋势
 
 ### 2. 多单逻辑（Duo1）
-1. 检测：空头趋势 + EMA144斜率 小于 15%
-2. 标记为Duo1
-3.当现价上穿ema144，第一次上传无效。 即  scema>1
-如下条件，设置开单价：
- 高于ema12 2%
- 等于ema12
-开单数量0.1
-4. 止损：每单止损固定5%或基于lowprice数组平均值的自适应止损
-5. 止盈：
-   - 上涨10%平仓50%
-   - 上涨15%平仓25%
-   - 上涨25%平仓25%
+
+| 步骤 | 条件 | 动作 |
+|------|------|------|
+| **标记** | 空头趋势 + 斜率低(<15°) | 标记 Duo1 |
+| **开仓** | Duo1标记 + 现价上穿EMA144 + EMA12上穿>1次 + 价格在EMA12±2% | 开多0.1手 |
+| **持仓** | 持有中 | 记录价格，计算移动止损 |
+| **止盈** | 上涨10% / 15% / 25% | 平仓50% / 25% / 25% |
+| **止损** | 固定5% 或 移动止损 | 根据highprice/lowprice比例 |
 
 ### 3. 空单逻辑（Kong1）
-1. 检测：空头趋势 + EMA144斜率 > 15%
-2. 标记为Kong1
-3. 满足下面的条件时，开仓0.1.
-条件：
-低于ema144 2%的价格，
-等于ema144
-等于ema150
-等于ema156
-低于mea565 2%的价格，
-ema565
-ema565
-ema600
-4. 止损：固定5%或基于highprice数组平均值的自适应止损
-5. 止盈：
-   - 下跌10%平仓50%
-   - 下跌15%平仓25%
-   - 下跌25%平仓25%
+
+| 步骤 | 条件 | 动作 |
+|------|------|------|
+| **标记** | 空头趋势 + 斜率高(>15°) | 标记 Kong1 |
+| **取消** | 空头趋势破裂 | 取消 Kong1标记 |
+| **开仓** | Kong1标记 + 价格靠近EMA144/150/156/565/600 + 现价下穿EMA144 | 开空0.1手 |
+| **持仓** | 持有中 | 记录价格，计算移动止损 |
+| **止盈** | 下跌10% / 15% / 25% | 平仓50% / 25% / 25% |
+| **止损** | 固定5% 或 移动止损 | 根据highprice/lowprice比例 |
 
 ### 4. 自适应移动止损
-- 当收集的价格总数 > 8根时启动
-- 多单：高于EMA12则加入highprice，低于则加入lowprice
-  - 若highprice数 < lowprice数：移动止损为成本价
-  - 否则：移动止损为lowprice平均值
-- 空单：逻辑相反
+
+**工作原理**：根据EMA12分类价格，通过 highprice/lowprice 数量比例判断行情方向
+
+```
+多单:
+├─ 价格 > EMA12 → 加入 highprice
+└─ 价格 < EMA12 → 加入 lowprice
+
+触发条件: 总价格数 > 8根
+├─ 若 highprice数 < lowprice数 (反向价格多)
+│   └─ 止损 = 入场价 (防守策略)
+└─ 若 highprice数 ≥ lowprice数 (同向价格多)
+    └─ 止损 = lowprice平均值 (获利策略)
+
+空单逻辑相反
+```
+
+**设计优势**：
+- 反向价格较多 → 行情不利 → 用固定止损防守
+- 同向价格较多 → 行情顺利 → 用动态止损继续获利
 
 ## 使用方法
 
 ### 在TradingView上使用
 
-1. **基础版本：**
-   - 将 `strategy.pine` 的代码复制到TradingView Pine编辑器
-   - 选择合适的交易对和4小时时间框架
-   - 运行回测
+#### 推荐：使用增强版本（strategy_enhanced.pine）
 
-2. **增强版本：**
-   - 先在编辑器中创建 `vegas_channel_lib` 库
-   - 然后创建 `strategy_enhanced.pine` 策略脚本
-   - 调整参数以适应您的交易品种
+1. **打开TradingView编辑器**
+   - 进入 Pine Script 编辑器
+   - 创建新策略脚本
 
-### 参数说明（增强版本）
+2. **复制代码**
+   - 将 `strategy_enhanced.pine` 的完整代码复制到编辑器
+   - 直接保存（无需导入库）
 
+3. **配置策略**
+   - 选择交易对 (如 BTC/USDT)
+   - **必须设置**: 时间框架为 **4H** (4小时)
+   - 其他时间框架可能导致不准确
+
+4. **调整参数**
+   - 按需调整参数（见下表）
+   - 点击 `Add to Chart` 运行回测
+
+5. **验证结果**
+   - 查看图表上的EMA和信号标记
+   - 观察右上角的信息面板
+
+#### 备选：使用基础版本（strategy.pine）
+- 适合学习者理解核心逻辑
+- 代码注释较少，参数不可调
+
+### 参数详解
+
+#### 趋势参数
+| 参数 | 默认值 | 范围 | 说明 |
+|------|--------|------|------|
+| EMA144 Slope Threshold | 15.0 | 5-30 | 区分多头(低)和空头(高)的斜率阈值(度数) |
+| Slope Calculation Period | 28 | 10-50 | 计算EMA144斜率时使用的K线数 |
+
+#### 开仓参数
+| 参数 | 默认值 | 范围 | 说明 |
+|------|--------|------|------|
+| Entry Position Size | 0.1 | 0.01-1.0 | 单次开仓数量（手/份） |
+| Entry Price Offset (%) | 2.0 | 0.5-5.0 | 开仓价格允许的偏移范围 |
+| Price Collection Threshold | 8 | 3-20 | 触发移动止损需要的最少价格记录数 |
+
+#### 风险管理参数
+| 参数 | 默认值 | 范围 | 说明 |
+|------|--------|------|------|
+| Stop Loss (%) | 5.0 | 2-10 | 固定止损百分比 |
+| Take Profit 1 (%) | 10.0 | 5-15 | 第一止盈点(平仓50%) |
+| Take Profit 2 (%) | 15.0 | 10-25 | 第二止盈点(平仓25%) |
+| Take Profit 3 (%) | 25.0 | 15-50 | 第三止盈点(平仓全部) |
+
+#### 高级参数
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| Slope Threshold | 25 | 斜率判断阈值（度数） |
-| Slope Period | 28 | 计算斜率的周期 |
-| Price Array Threshold | 8 | 触发移动止损的价格记录数 |
-| Stop Loss % | 5 | 固定止损百分比 |
-| Take Profit 1 % | 10 | 第一个止盈点 |
-| Take Profit 2 % | 15 | 第二个止盈点 |
-| Take Profit 3 % | 25 | 第三个止盈点 |
+| Array Queue Capacity | 48 | 价格数组最大容量(循环队列) |
+
+### 参数调整建议
+
+**想要更多交易信号？**
+```
+↓ 降低 EMA144 Slope Threshold (如 15 → 10)
+  → 更容易触发 Duo1/Kong1
+```
+
+**想要更保守的止损？**
+```
+↑ 提高 Stop Loss % (如 5 → 8)
+  → 降低被止损的概率
+```
+
+**想要快速获利？**
+```
+↓ 降低 Take Profit 1/2/3 (如 10/15/25 → 8/12/20)
+  → 更早达到止盈条件
+```
+
+**想要更稳定的移动止损？**
+```
+↑ 提高 Price Collection Threshold (如 8 → 12)
+  → 需要更多价格数据才激活
 
 ## 回测和性能分析
 
@@ -176,19 +255,67 @@ stats = btlib.f_generate_backtest_report(trades)
 
 ## 扩展和自定义
 
-### 添加新的指标
-在 `vegas_channel_lib` 中添加导出函数：
+> 📖 **详细的代码修改指南请参考 [ARCHITECTURE.md](ARCHITECTURE.md)** - 包含代码结构、维护清单、常见问题
+
+### 添加新的开仓条件
+
+在第五部分的 Duo1/Kong1 逻辑中添加新条件：
 
 ```pine
-export f_custom_indicator() =>
-    // 您的指标逻辑
+// 示例：添加 MACD 确认条件
+if duo1_marked and ta.crossover(close, ema144) and ema12_cross_count > 1
+   and strategy.position_size == 0
+    if f_check_price_near_ema(close, ema12, OFFSET_PERCENT)
+        // 新增：MACD 确认
+        if ta.macd(close, 12, 26, 9) > 0
+            long_entry_price := close
+            strategy.entry("Long", strategy.long, qty=ENTRY_QTY)
 ```
 
 ### 修改止盈止损逻辑
-编辑策略中的止盈止损部分，或使用 `backtest_lib` 中的计算函数。
 
-### 集成其他策略模块
-利用库函数接口，轻松集成其他交易模块。
+编辑第七部分的止盈条件：
+
+```pine
+// 原逻辑
+if close > long_entry_price * (1 + TP1_PERCENT / 100)
+    strategy.close("Long")
+
+// 修改为：时间窗口限制
+if close > long_entry_price * (1 + TP1_PERCENT / 100) and hour >= 14
+    strategy.close("Long")
+```
+
+### 自定义指标函数
+
+在第一部分添加新的计算函数：
+
+```pine
+// 自定义 RSI 指标
+f_custom_rsi(float price, int period) =>
+    ta.rsi(price, period)
+
+// 在趋势检测中使用
+custom_rsi = f_custom_rsi(close, 14)
+downtrend_with_rsi = downtrend and custom_rsi < 50
+```
+
+### 扩展参数组
+
+在第二部分添加新参数：
+
+```pine
+// 自定义参数组
+MY_CUSTOM_PARAM = input(100, "My Parameter", group="Custom")
+ANOTHER_PARAM = input(true, "Enable Feature", group="Custom")
+```
+
+**修改工作流**：
+1. 👉 阅读 [ARCHITECTURE.md](ARCHITECTURE.md) 的代码结构部分
+2. 👉 在对应部分添加/修改代码
+3. 👉 检查注释是否清晰
+4. 👉 在 TradingView 编译和测试
+5. 👉 更新本文档说明变化。
 
 ## 免责声明
 
