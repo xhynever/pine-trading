@@ -61,18 +61,24 @@ f_calculate_trailing_sl(bool is_long, float entry_price, array<float> high_arr, 
             if array.size(high_arr) < array.size(low_arr)
                 entry_price
             else
-                sum = 0.0
-                for i = 0 to array.size(low_arr) - 1
-                    sum += array.get(low_arr, i)
-                sum / array.size(low_arr)
+                if array.size(low_arr) == 0
+                    entry_price
+                else
+                    sum = 0.0
+                    for i = 0 to array.size(low_arr) - 1
+                        sum += array.get(low_arr, i)
+                    sum / array.size(low_arr)
         else
             if array.size(high_arr) > array.size(low_arr)
                 entry_price
             else
-                sum = 0.0
-                for i = 0 to array.size(high_arr) - 1
-                    sum += array.get(high_arr, i)
-                sum / array.size(high_arr)
+                if array.size(high_arr) == 0
+                    entry_price
+                else
+                    sum = 0.0
+                    for i = 0 to array.size(high_arr) - 1
+                        sum += array.get(high_arr, i)
+                    sum / array.size(high_arr)
 
 // 检查价格是否接近指定EMA (容差范围)
 f_check_price_near_ema(float price, float ema, float offset_percent) =>
@@ -199,17 +205,15 @@ if not downtrend
 // 开仓条件:
 // 1. Kong1已标记
 // 2. 价格接近指定EMA (EMA144/150/156/565/600)
-// 3. 现价下穿EMA144
-// 4. 当前无持仓
+// 3. 当前无持仓
 if kong1_marked and strategy.position_size == 0
     if f_check_entry_price_short(close, ema144, ema150, ema156, ema565, ema600, OFFSET_PERCENT)
-        if ta.crossunder(close, ema144)
-            short_entry_price := close
-            strategy.entry("Short1", strategy.short, qty=ENTRY_QTY)
-            kong1_marked := false
-            array.clear(highprice)
-            array.clear(lowprice)
-            bars_since_entry := 0
+        short_entry_price := close
+        strategy.entry("Short1", strategy.short, qty=ENTRY_QTY)
+        kong1_marked := false
+        array.clear(highprice)
+        array.clear(lowprice)
+        bars_since_entry := 0
 
 // ============================================================================
 // 第六部分: 持仓管理 - 价格记录与移动止损
