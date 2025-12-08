@@ -1,9 +1,8 @@
 //@version=5
-strategy("4H Vegas Channel Strategy Enhanced v2.0",
+strategy("4H Vegas Channel Strategy - SHORT ONLY v1.0",
          overlay=true,
          default_qty_type=strategy.percent_of_equity,
          default_qty_value=20)
-
 
 // ============================================================================
 // 第一部分: 内联库函数
@@ -34,34 +33,22 @@ f_record_price(float price, float threshold, array<float> high_arr, array<float>
     if array.size(low_arr) > capacity
         array.shift(low_arr)
 
-// 计算移动止损
-f_calculate_trailing_sl(bool is_long, float entry_price, array<float> high_arr, array<float> low_arr, int threshold) =>
+// 计算移动止损 (仅处理空单)
+f_calculate_trailing_sl_short(float entry_price, array<float> high_arr, array<float> low_arr, int threshold) =>
     total_count = array.size(high_arr) + array.size(low_arr)
     if total_count <= threshold
         entry_price
     else
-        if is_long
-            if array.size(high_arr) < array.size(low_arr)
-                entry_price
-            else
-                if array.size(low_arr) == 0
-                    entry_price
-                else
-                    sum = 0.0
-                    for i = 0 to array.size(low_arr) - 1
-                        sum += array.get(low_arr, i)
-                    sum / array.size(low_arr)
+        if array.size(high_arr) > array.size(low_arr)
+            entry_price
         else
-            if array.size(high_arr) > array.size(low_arr)
+            if array.size(high_arr) == 0
                 entry_price
             else
-                if array.size(high_arr) == 0
-                    entry_price
-                else
-                    sum = 0.0
-                    for i = 0 to array.size(high_arr) - 1
-                        sum += array.get(high_arr, i)
-                    sum / array.size(high_arr)
+                sum = 0.0
+                for i = 0 to array.size(high_arr) - 1
+                    sum += array.get(high_arr, i)
+                sum / array.size(high_arr)
 
 // 检查价格是否接近指定EMA (容差范围)
 f_check_price_near_ema(float price, float ema, float offset_percent) =>
@@ -81,7 +68,6 @@ f_check_entry_price_short(float price, float ema144, float ema150, float ema156,
 
 // 趋势与波动率参数
 // ATR_THRESHOLD: 波动率阈值
-//   - ATR < 此值 = 波动低 (平缓) → Duo1多单信号
 //   - ATR > 此值 = 波动高 (剧烈) → Kong1空单信号
 //   建议值范围：80-150（根据币种和市场环境调整）
 ATR_THRESHOLD = input(100.0, "ATR Volatility Threshold", group="Trend Parameters")
@@ -128,10 +114,8 @@ downtrend = f_is_downtrend(ema12, ema144, ema156, ema565, ema676)
 
 // 真实波幅计算
 // atr_value: 当前的ATR值，代表市场波动强度
-//   波动低 (volatility_low)：当前市场相对平缓，适合多单建仓
 //   波动高 (volatility_high)：当前市场波动剧烈，适合空单建仓
 atr_value = f_calculate_volatility(ATR_PERIOD)
-volatility_low = atr_value < ATR_THRESHOLD   // 波动率低: 适合多头
 volatility_high = atr_value > ATR_THRESHOLD  // 波动率高: 适合空头
 
 // ============================================================================
@@ -139,12 +123,9 @@ volatility_high = atr_value > ATR_THRESHOLD  // 波动率高: 适合空头
 // ============================================================================
 
 // 信号标记
-var bool duo1_marked = false       // Duo1多单信号标记
 var bool kong1_marked = false      // Kong1空单信号标记
-var int ema12_cross_count = 0      // EMA12上穿EMA144计数
 
 // 头寸信息
-var float long_entry_price = 0.0   // 多单入场价
 var float short_entry_price = 0.0  // 空单入场价
 
 // 价格记录数组
@@ -153,39 +134,10 @@ var array<float> lowprice = array.new<float>()   // 低于EMA12的收盘价
 
 // 时间追踪
 var int bars_since_entry = 0       // 入场后经过的K线数
-var bool prev_crossover = false    // 前一根是否EMA12上穿
-var bool prev_crossunder = false   // 前一根是否现价下穿 (备用)
 
 // ============================================================================
 // 第五部分: 交易逻辑 - 信号与开仓
 // ============================================================================
-
-// 记录EMA12与EMA144的交叉次数
-if ta.crossover(ema12, ema144)
-    if not prev_crossover
-        ema12_cross_count += 1
-prev_crossover := ta.crossover(ema12, ema144)
-
-// --- Duo1 多单信号 ---
-// 标记条件: 空头趋势 + ATR波动率低 (<= 阈值)
-if not duo1_marked and downtrend and volatility_low
-    duo1_marked := true
-
-// 开仓条件:
-// 1. Duo1已标记
-// 2. 现价上穿EMA144
-// 3. EMA12已上穿EMA144超过1次 (避免首次上穿)
-// 4. 价格在EMA12 ± OFFSET_PERCENT% 范围内
-// 5. 当前无持仓
-if duo1_marked and ta.crossover(close, ema144) and ema12_cross_count > 1 and strategy.position_size == 0
-    if f_check_price_near_ema(close, ema12, OFFSET_PERCENT)
-        long_entry_price := close
-        strategy.entry("Long", strategy.long, qty=ENTRY_QTY)
-        duo1_marked := false
-        ema12_cross_count := 0
-        array.clear(highprice)
-        array.clear(lowprice)
-        bars_since_entry := 0
 
 // --- Kong1 空单信号 ---
 // 标记条件: 空头趋势 + ATR波动率高 (> 阈值)
@@ -213,17 +165,6 @@ if kong1_marked and strategy.position_size == 0
 // 第六部分: 持仓管理 - 价格记录与移动止损
 // ============================================================================
 
-// 多单持仓管理
-if strategy.position_size > 0 and not na(long_entry_price)
-    bars_since_entry += 1
-
-    // 记录价格 (根据EMA12分类)
-    f_record_price(close, ema12, highprice, lowprice, QUEUE_CAPACITY)
-
-    // 计算并执行移动止损
-    trailing_sl = f_calculate_trailing_sl(true, long_entry_price, highprice, lowprice, PRICE_ARRAY_THRESHOLD)
-    strategy.exit("SL_Long", "Long", stop=trailing_sl)
-
 // 空单持仓管理
 if strategy.position_size < 0 and not na(short_entry_price)
     bars_since_entry += 1
@@ -232,25 +173,12 @@ if strategy.position_size < 0 and not na(short_entry_price)
     f_record_price(close, ema12, highprice, lowprice, QUEUE_CAPACITY)
 
     // 计算并执行移动止损
-    trailing_sl = f_calculate_trailing_sl(false, short_entry_price, highprice, lowprice, PRICE_ARRAY_THRESHOLD)
+    trailing_sl = f_calculate_trailing_sl_short(short_entry_price, highprice, lowprice, PRICE_ARRAY_THRESHOLD)
     strategy.exit("SL_Short", "Short1", stop=trailing_sl)
 
 // ============================================================================
 // 第七部分: 止盈止损执行
 // ============================================================================
-
-// 多单止盈分层: 10%平50% → 15%平25% → 25%平100%
-if strategy.position_size > 0
-    if close > long_entry_price * (1 + TP3_PERCENT / 100)
-        strategy.close("Long", comment="TP3 25%")
-    else if close > long_entry_price * (1 + TP2_PERCENT / 100)
-        strategy.close("Long", comment="TP2 25%")
-    else if close > long_entry_price * (1 + TP1_PERCENT / 100)
-        strategy.close("Long", comment="TP1 50%")
-
-    // 固定止损
-    sl = long_entry_price * (1 - SL_PERCENT / 100)
-    strategy.exit("SL_Long", "Long", stop=sl)
 
 // 空单止盈分层: 10%平50% → 15%平25% → 25%平100%
 if strategy.position_size < 0
@@ -277,8 +205,6 @@ plot(ema565, "EMA565", color.purple, linewidth=1)
 plot(ema676, "EMA676", color.teal, linewidth=1)
 
 // 信号标记
-plotshape(duo1_marked, title="Long Signal (Duo1)", location=location.abovebar,
-          color=color.green, size=size.small, text="L")
 plotshape(kong1_marked, title="Short Signal (Kong1)", location=location.belowbar,
           color=color.red, size=size.small, text="S")
 
@@ -290,10 +216,10 @@ var table panel = na
 
 // 初始化或更新信息面板
 if na(panel)
-    panel := table.new(position.top_right, 2, 12, border_color=color.gray, border_width=1)
+    panel := table.new(position.top_right, 2, 10, border_color=color.gray, border_width=1)
 
 // 标题
-table.cell(panel, 0, 0, "4H Vegas Channel", bgcolor=color.navy, text_color=color.white, width=50)
+table.cell(panel, 0, 0, "4H SHORT ONLY", bgcolor=color.navy, text_color=color.white, width=50)
 table.cell(panel, 1, 0, "值", bgcolor=color.navy, text_color=color.white, width=50)
 
 // 第1行: 4H趋势
@@ -304,39 +230,30 @@ table.cell(panel, 1, 1, downtrend ? "看空" : "中性", text_color=downtrend ? 
 table.cell(panel, 0, 2, "ATR波动率", text_color=color.white)
 table.cell(panel, 1, 2, str.tostring(math.round(atr_value, 2)), text_color=color.white)
 
-// 第3行: Duo1状态
-table.cell(panel, 0, 3, "Duo1状态", text_color=color.white)
-table.cell(panel, 1, 3, duo1_marked ? "✓ 标记" : "✗ 等待", text_color=duo1_marked ? color.green : color.red)
+// 第3行: Kong1状态
+table.cell(panel, 0, 3, "Kong1状态", text_color=color.white)
+table.cell(panel, 1, 3, kong1_marked ? "✓ 标记" : "✗ 等待", text_color=kong1_marked ? color.green : color.red)
 
-// 第4行: Kong1状态
-table.cell(panel, 0, 4, "Kong1状态", text_color=color.white)
-table.cell(panel, 1, 4, kong1_marked ? "✓ 标记" : "✗ 等待", text_color=kong1_marked ? color.green : color.red)
+// 第4行: 持仓方向
+table.cell(panel, 0, 4, "持仓", text_color=color.white)
+pos_text = strategy.position_size < 0 ? "空头" : "无"
+pos_color = strategy.position_size < 0 ? color.red : color.gray
+table.cell(panel, 1, 4, pos_text, text_color=pos_color)
 
-// 第5行: EMA12交叉次数
-table.cell(panel, 0, 5, "EMA12上穿", text_color=color.white)
-table.cell(panel, 1, 5, str.tostring(ema12_cross_count) + "次", text_color=color.white)
+// 第5行: 入场价
+table.cell(panel, 0, 5, "入场价", text_color=color.white)
+entry_text = strategy.position_size != 0 ? str.tostring(math.round(short_entry_price, 4)) : "-"
+table.cell(panel, 1, 5, entry_text, text_color=color.white)
 
-// 第6行: 持仓方向
-table.cell(panel, 0, 6, "持仓", text_color=color.white)
-pos_text = strategy.position_size > 0 ? "多头" : (strategy.position_size < 0 ? "空头" : "无")
-pos_color = strategy.position_size > 0 ? color.green : (strategy.position_size < 0 ? color.red : color.gray)
-table.cell(panel, 1, 6, pos_text, text_color=pos_color)
+// 第6行: 持有K线数
+table.cell(panel, 0, 6, "持有K线", text_color=color.white)
+table.cell(panel, 1, 6, str.tostring(bars_since_entry), text_color=color.white)
 
-// 第7行: 入场价
-table.cell(panel, 0, 7, "入场价", text_color=color.white)
-entry_price_display = long_entry_price > 0 ? long_entry_price : short_entry_price
-entry_text = strategy.position_size != 0 ? str.tostring(math.round(entry_price_display, 4)) : "-"
-table.cell(panel, 1, 7, entry_text, text_color=color.white)
+// 第7行: 价格记录数
+table.cell(panel, 0, 7, "价格记录", text_color=color.white)
+table.cell(panel, 1, 7, str.tostring(array.size(highprice) + array.size(lowprice)), text_color=color.white)
 
-// 第8行: 持有K线数
-table.cell(panel, 0, 8, "持有K线", text_color=color.white)
-table.cell(panel, 1, 8, str.tostring(bars_since_entry), text_color=color.white)
-
-// 第9行: 价格记录数
-table.cell(panel, 0, 9, "价格记录", text_color=color.white)
-table.cell(panel, 1, 9, str.tostring(array.size(highprice) + array.size(lowprice)), text_color=color.white)
-
-// 第10行: 日线趋势
-table.cell(panel, 0, 10, "日线趋势", text_color=color.white)
+// 第8行: 日线趋势
+table.cell(panel, 0, 8, "日线趋势", text_color=color.white)
 downtrend_d = ema12_d < math.min(ema144_d, ema156_d)
-table.cell(panel, 1, 10, downtrend_d ? "看空" : "中性", text_color=downtrend_d ? color.red : color.gray)
+table.cell(panel, 1, 8, downtrend_d ? "看空" : "中性", text_color=downtrend_d ? color.red : color.gray)
