@@ -1,0 +1,361 @@
+//@version=5
+strategy("4H Vegas Channel Strategy - LONG ONLY v1.0",
+         overlay=true,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=20)
+
+// ============================================================================
+// 第一部分: 内联库函数
+// ============================================================================
+
+// 计算5条EMA指标
+f_calculate_emas(int len12, int len144, int len156, int len565, int len676) =>
+    [ta.ema(close, len12), ta.ema(close, len144), ta.ema(close, len156), ta.ema(close, len565), ta.ema(close, len676)]
+
+// 检测空头趋势: ema12 < min(ema144, ema156) < min(ema565, ema676)
+f_is_downtrend(float ema12, float ema144, float ema156, float ema565, float ema676) =>
+    ema12 < math.min(ema144, ema156) and math.min(ema144, ema156) < math.min(ema565, ema676)
+
+// 检测多头趋势: ema12 > max(ema144, ema156) > max(ema565, ema676)
+f_is_uptrend(float ema12, float ema144, float ema156, float ema565, float ema676) =>
+    ema12 > math.max(ema144, ema156) and math.max(ema144, ema156) > math.max(ema565, ema676)
+
+// 计算真实波幅指标 (ATR) - 反映市场波动性
+f_calculate_volatility(int period) =>
+    ta.atr(period)
+
+// 记录价格到数组
+f_record_price(float price, float threshold, array<float> high_arr, array<float> low_arr, int capacity) =>
+    if price > threshold
+        array.push(high_arr, price)
+    else
+        array.push(low_arr, price)
+
+    // 循环队列管理: 超过容量则删除最早数据
+    if array.size(high_arr) > capacity
+        array.shift(high_arr)
+    if array.size(low_arr) > capacity
+        array.shift(low_arr)
+
+// 计算移动止损 (仅处理多单)
+f_calculate_trailing_sl_long(float entry_price, array<float> high_arr, array<float> low_arr, int threshold, float atr_val) =>
+    total_count = array.size(high_arr) + array.size(low_arr)
+    if total_count <= threshold
+        entry_price * (1 - atr_val / entry_price / 100)
+    else
+        if array.size(low_arr) == 0
+            entry_price * (1 - atr_val / entry_price / 100)
+        else
+            // 使用低点的平均值减去ATR作为止损
+            sum = 0.0
+            for i = 0 to array.size(low_arr) - 1
+                sum += array.get(low_arr, i)
+            avg_low = sum / array.size(low_arr)
+            math.max(avg_low, entry_price * (1 - atr_val / entry_price / 100))
+
+// 检查价格是否接近指定EMA (容差范围)
+f_check_price_near_ema(float price, float ema, float offset_percent) =>
+    price >= ema * (1 - offset_percent / 100) and price <= ema * (1 + offset_percent / 100)
+
+// ============================================================================
+// 第二部分: 参数定义
+// ============================================================================
+
+// 趋势与波动率参数
+ATR_PERIOD = input(14, "ATR Calculation Period", group="Trend Parameters")
+
+// 开仓参数
+ENTRY_QTY = input(0.1, "Entry Position Size", group="Entry Parameters")
+OFFSET_PERCENT = input(2.0, "Entry Price Offset (%)", group="Entry Parameters")
+PRICE_ARRAY_THRESHOLD = input(8, "Price Collection Threshold (bars)", group="Entry Parameters")
+
+// 止损止盈参数
+SL_ATR_MULTIPLE = input(2.0, "Stop Loss (ATR Multiple)", group="Risk Management")
+TP1_PERCENT = input(10.0, "Take Profit 1 (%)", group="Risk Management")
+TP2_PERCENT = input(15.0, "Take Profit 2 (%)", group="Risk Management")
+TP3_PERCENT = input(25.0, "Take Profit 3 (%)", group="Risk Management")
+
+// 高级参数
+QUEUE_CAPACITY = input(48, "Array Queue Capacity", group="Advanced")
+PENDING_ORDER_OFFSET = input(2.0, "Pending Order Offset (%)", group="Advanced")
+
+// ============================================================================
+// 第三部分: 指标计算
+// ============================================================================
+
+// 日线EMA (参考用)
+ema12_d = request.security(syminfo.tickerid, "D", ta.ema(close, 12))
+ema144_d = request.security(syminfo.tickerid, "D", ta.ema(close, 144))
+ema156_d = request.security(syminfo.tickerid, "D", ta.ema(close, 156))
+ema565_d = request.security(syminfo.tickerid, "D", ta.ema(close, 565))
+ema676_d = request.security(syminfo.tickerid, "D", ta.ema(close, 676))
+
+// 4H主EMA (5条)
+[ema12, ema144, ema156, ema565, ema676] = f_calculate_emas(12, 144, 156, 565, 676)
+
+// 趋势判断
+downtrend = f_is_downtrend(ema12, ema144, ema156, ema565, ema676)
+uptrend = f_is_uptrend(ema12, ema144, ema156, ema565, ema676)
+
+// 真实波幅计算
+atr_value = f_calculate_volatility(ATR_PERIOD)
+
+// EMA12上穿EMA144检测
+ema12_crossover = ta.crossover(ema12, ema144)
+
+// ============================================================================
+// 第四部分: 状态变量
+// ============================================================================
+
+// 信号标记
+var bool downtrend_confirmed = false      // 空头趋势已确认
+var int ema12_crossover_count = 0         // EMA12上穿EMA144次数
+var bool has_crossover_signal = false     // EMA12上穿信号标记
+var bool has_new_entry_signal = false     // 新开仓信号标记
+
+// 分批头寸管理 - 每批0.1仓位
+var array<float> batch_entry_prices = array.new<float>()  // 各批入场价
+var array<float> batch_sl_prices = array.new<float>()     // 各批止损价
+var array<float> batch_pending_prices = array.new<float>() // 各批限价单价格
+var array<string> batch_ids = array.new<string>()         // 各批订单ID (Long_1, Long_2...)
+var array<bool> batch_opened = array.new<bool>()          // 各批是否已开仓
+var array<bool> batch_has_stop_loss = array.new<bool>()   // 各批是否已触发过止损
+
+// 价格记录数组
+var array<float> highprice = array.new<float>()  // 高于EMA12的收盘价
+var array<float> lowprice = array.new<float>()   // 低于EMA12的收盘价
+
+// 时间追踪
+var int bars_since_entry = 0       // 入场后经过的K线数
+
+// ============================================================================
+// 第五部分: 交易逻辑 - 趋势转变和信号
+// ============================================================================
+
+// 步骤1: 检测空头趋势并记录EMA12上穿次数
+if downtrend and not downtrend_confirmed
+    downtrend_confirmed := true
+    ema12_crossover_count := 0
+
+// 如果形成多头趋势，取消上穿计数
+if uptrend
+    downtrend_confirmed := false
+    ema12_crossover_count := 0
+    has_crossover_signal := false
+    has_new_entry_signal := false
+
+// 在空头趋势中记录EMA12上穿EMA144的次数
+if downtrend_confirmed and ema12_crossover
+    ema12_crossover_count += 1
+    has_crossover_signal := true
+else
+    has_crossover_signal := false
+
+// 步骤2: EMA12上穿2次后，挂限价单
+// 在EMA12和EMA144以及低于它们2%的位置挂限价单
+if downtrend_confirmed and ema12_crossover_count == 2 and strategy.position_size == 0
+    // 挂EMA12 - 2%的限价单
+    pending_price_ema12 = ema12 * (1 - PENDING_ORDER_OFFSET / 100)
+
+    // 挂EMA144 - 2%的限价单
+    pending_price_ema144 = ema144 * (1 - PENDING_ORDER_OFFSET / 100)
+
+    // 记录待挂单信息
+    if array.size(batch_pending_prices) == 0
+        array.push(batch_pending_prices, pending_price_ema12)
+        array.push(batch_pending_prices, pending_price_ema144)
+
+// 步骤3: 监控限价单执行和K线移动
+// 限价单会随着K线移动而调整
+if downtrend_confirmed and ema12_crossover_count >= 2 and array.size(batch_pending_prices) > 0
+    // 更新待挂单价格（跟踪EMA移动）
+    if array.size(batch_pending_prices) >= 1
+        array.set(batch_pending_prices, 0, ema12 * (1 - PENDING_ORDER_OFFSET / 100))
+    if array.size(batch_pending_prices) >= 2
+        array.set(batch_pending_prices, 1, ema144 * (1 - PENDING_ORDER_OFFSET / 100))
+
+    // 检查是否触及限价单
+    if array.size(batch_ids) < 2
+        // 检查EMA12限价单
+        if array.size(batch_ids) == 0 and close <= ema12 * (1 - PENDING_ORDER_OFFSET / 100)
+            entry_price = close
+            batch_id = "Long_1"
+            strategy.entry(batch_id, strategy.long, qty=ENTRY_QTY)
+            has_new_entry_signal := true
+
+            // 初始止损 = 入场价 - 2*ATR
+            sl_price = entry_price - (atr_value * SL_ATR_MULTIPLE)
+
+            array.push(batch_entry_prices, entry_price)
+            array.push(batch_sl_prices, sl_price)
+            array.push(batch_ids, batch_id)
+            array.push(batch_opened, true)
+            array.push(batch_has_stop_loss, false)
+
+            array.clear(highprice)
+            array.clear(lowprice)
+            bars_since_entry := 0
+
+        // 检查EMA144限价单
+        if array.size(batch_ids) == 1 and close <= ema144 * (1 - PENDING_ORDER_OFFSET / 100)
+            entry_price = close
+            batch_id = "Long_2"
+            strategy.entry(batch_id, strategy.long, qty=ENTRY_QTY)
+            has_new_entry_signal := true
+
+            // 初始止损 = 入场价 - 2*ATR
+            sl_price = entry_price - (atr_value * SL_ATR_MULTIPLE)
+
+            array.push(batch_entry_prices, entry_price)
+            array.push(batch_sl_prices, sl_price)
+            array.push(batch_ids, batch_id)
+            array.push(batch_opened, true)
+            array.push(batch_has_stop_loss, false)
+else
+    has_new_entry_signal := false
+
+// ============================================================================
+// 第六部分: 持仓管理 - 动态止损和加仓
+// ============================================================================
+
+// 多单持仓管理
+if strategy.position_size > 0 and array.size(batch_ids) > 0
+    bars_since_entry += 1
+
+    // 记录价格 (根据EMA12分类)
+    f_record_price(close, ema12, highprice, lowprice, QUEUE_CAPACITY)
+
+    // 为每个已开仓的批次更新止损
+    for i = 0 to array.size(batch_ids) - 1
+        batch_id_val = array.get(batch_ids, i)
+        entry_price = array.get(batch_entry_prices, i)
+        current_sl = array.get(batch_sl_prices, i)
+
+        // 条件1: 开单后低于成本价5%直接止损
+        hardstop_price = entry_price * (1 - 0.05)
+        if close < hardstop_price
+            strategy.close(batch_id_val, comment="Hard Stop Loss 5%")
+            array.set(batch_has_stop_loss, i, true)
+
+        // 条件2: 第8根K线时，检查高于EMA12的收盘价数量
+        if bars_since_entry == 8
+            high_count = array.size(highprice)
+            // 如果高于EMA12的K线数少于4根，则在成本价平仓
+            if high_count < 4
+                strategy.close(batch_id_val, comment="Cost Price Close (High Count < 4)")
+                array.remove(batch_entry_prices, i)
+                array.remove(batch_sl_prices, i)
+                array.remove(batch_ids, i)
+                array.remove(batch_opened, i)
+                array.remove(batch_has_stop_loss, i)
+                break
+
+        // 条件3: 8根K线后，动态调整止损
+        // 在8根K线内，最多5%止损。8根K线后，动态调整止损
+        if bars_since_entry > 8
+            if not array.get(batch_has_stop_loss, i)
+                new_sl = entry_price - (atr_value * SL_ATR_MULTIPLE)
+                // 更新止损（止损只能向上调整，不能向下）
+                if new_sl > current_sl
+                    array.set(batch_sl_prices, i, new_sl)
+                    strategy.exit("SL_" + batch_id_val, batch_id_val, stop=new_sl)
+                else
+                    strategy.exit("SL_" + batch_id_val, batch_id_val, stop=current_sl)
+            else
+                strategy.exit("SL_" + batch_id_val, batch_id_val, stop=current_sl)
+        else if bars_since_entry <= 8
+            // 8根K线内保持固定止损（成本价-5%）
+            strategy.exit("SL_" + batch_id_val, batch_id_val, stop=hardstop_price)
+
+    // 步骤5: 加仓逻辑 - 无止损且再次触碰EMA12或EMA144
+    if not uptrend and array.size(batch_ids) < 2
+        // 检查是否再次接近EMA12或EMA144
+        price_near_ema12 = f_check_price_near_ema(close, ema12, OFFSET_PERCENT)
+        price_near_ema144 = f_check_price_near_ema(close, ema144, OFFSET_PERCENT)
+
+        if (price_near_ema12 or price_near_ema144) and array.size(batch_ids) == 1
+            entry_price = close
+            batch_id = "Long_" + str.tostring(array.size(batch_ids) + 1)
+            strategy.entry(batch_id, strategy.long, qty=ENTRY_QTY)
+
+            // 初始止损 = 入场价 - 2*ATR
+            sl_price = entry_price - (atr_value * SL_ATR_MULTIPLE)
+
+            array.push(batch_entry_prices, entry_price)
+            array.push(batch_sl_prices, sl_price)
+            array.push(batch_ids, batch_id)
+            array.push(batch_opened, true)
+            array.push(batch_has_stop_loss, false)
+
+// 止损触发时，重置上穿计数
+if strategy.position_size == 0 and array.size(batch_ids) > 0
+    array.clear(batch_entry_prices)
+    array.clear(batch_sl_prices)
+    array.clear(batch_ids)
+    array.clear(batch_opened)
+    array.clear(batch_has_stop_loss)
+    array.clear(batch_pending_prices)
+    array.clear(highprice)
+    array.clear(lowprice)
+
+    // 重置上穿计数为0
+    ema12_crossover_count := 0
+    downtrend_confirmed := false
+    bars_since_entry := 0
+
+// ============================================================================
+// 第七部分: 止盈执行
+// ============================================================================
+
+// 多单止盈分层: 10%平50% → 15%平25% → 25%平100%
+if array.size(batch_entry_prices) > 0
+    for i = 0 to array.size(batch_entry_prices) - 1
+        entry_price = array.get(batch_entry_prices, i)
+        batch_id_val = array.get(batch_ids, i)
+
+        // 三层止盈：触及时平仓该批
+        if close > entry_price * (1 + TP3_PERCENT / 100)
+            strategy.close(batch_id_val, comment="TP3 100%")
+            array.remove(batch_entry_prices, i)
+            array.remove(batch_sl_prices, i)
+            array.remove(batch_ids, i)
+            array.remove(batch_opened, i)
+            array.remove(batch_has_stop_loss, i)
+            break
+        else if close > entry_price * (1 + TP2_PERCENT / 100)
+            strategy.close(batch_id_val, comment="TP2 25%")
+            array.remove(batch_entry_prices, i)
+            array.remove(batch_sl_prices, i)
+            array.remove(batch_ids, i)
+            array.remove(batch_opened, i)
+            array.remove(batch_has_stop_loss, i)
+            break
+        else if close > entry_price * (1 + TP1_PERCENT / 100)
+            strategy.close(batch_id_val, comment="TP1 50%")
+            array.remove(batch_entry_prices, i)
+            array.remove(batch_sl_prices, i)
+            array.remove(batch_ids, i)
+            array.remove(batch_opened, i)
+            array.remove(batch_has_stop_loss, i)
+            break
+
+// ============================================================================
+// 第八部分: 可视化
+// ============================================================================
+
+// EMA绘制
+plot(ema12, color=color.blue, linewidth=1)
+plot(ema144, color=color.red, linewidth=1)
+plot(ema156, color=color.orange, linewidth=1)
+plot(ema565, color=color.purple, linewidth=1)
+plot(ema676, color=color.teal, linewidth=1)
+
+// 信号标记
+// EMA12上穿EMA144的标记
+plotshape(has_crossover_signal, location=location.abovebar,
+          color=color.orange, size=size.small, text="↑")
+
+// 开多单时的标记
+plotshape(has_new_entry_signal, location=location.belowbar,
+          color=color.green, size=size.small, text="BUY")
+
