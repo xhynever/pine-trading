@@ -1,0 +1,264 @@
+//@version=6
+strategy("4H Cross Sell Strategy - First Short on EMA12 Cross Down",
+         overlay=true,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=20)
+
+// ============================================================================
+// 第一部分: 参数定义
+// ============================================================================
+
+ENTRY_QTY = input(0.1, "Entry Position Size", group="Entry Parameters")
+
+// ============================================================================
+// 第二部分: 指标计算
+// ============================================================================
+
+// 计算EMA指标
+ema12 = ta.ema(close, 12)
+ema144 = ta.ema(close, 144)
+ema565 = ta.ema(close, 565)
+
+// 趋势判断
+// 多头趋势: ema565 > ema144 > ema12
+is_uptrend = ema565 > ema144 and ema144 > ema12
+
+// 空头趋势: ema12 < ema144 < ema565
+is_downtrend = ema12 < ema144 and ema144 < ema565
+
+// EMA12下穿EMA565检测（第一次下穿）
+ema12_crossdown_565 = ta.crossunder(ema12, ema565)
+
+// ============================================================================
+// 第三部分: 状态变量
+// ============================================================================
+
+// 多头趋势状态: 1=多头趋势, 2=已下穿等待开仓
+var int uptrend_state = 0
+
+// 下穿后的记录
+var int bars_since_crossdown = 0          // 下穿后经过的K线数
+var float highest_price_since_crossdown = na  // 下穿后的最高价
+var float highest_price_kline = na           // 单根K线最高价
+var int bars_since_highest = 0               // 最高价后经过的K线数
+
+// 开仓相关
+var float entry_price = na              // 开仓价格
+var float entry_highest_price = na      // 开仓后记录的最高价（持续更新）
+var int bars_since_entry = 0            // 开仓后经过的K线数
+var int close_above_entry_count = 0     // 收盘价大于开仓价的次数
+var float highest_in_8_bars = na        // 开仓后8根K线的最高价
+
+// ============================================================================
+// 第四部分: 交易逻辑
+// ============================================================================
+
+// 步骤1: 检测多头趋势并记录状态
+if is_uptrend and uptrend_state == 0
+    uptrend_state := 1
+    // 重置下穿相关变量
+    bars_since_crossdown := 0
+    highest_price_since_crossdown := na
+    highest_price_kline := na
+    bars_since_highest := 0
+
+// 如果形成空头趋势，重置状态
+if is_downtrend
+    uptrend_state := 0
+    bars_since_crossdown := 0
+    highest_price_since_crossdown := na
+    highest_price_kline := na
+    bars_since_highest := 0
+
+// 步骤2: 在多头趋势中，检测EMA12第一次下穿EMA565
+// 下穿时状态：ema12 < ema565 < ema144（不是空头趋势）
+// 空头趋势是：ema12 < ema144 < ema565
+if uptrend_state == 1 and ema12_crossdown_565
+    // 检查下穿后的状态：ema12 < ema565 < ema144
+    if ema12 < ema565 and ema565 < ema144
+        uptrend_state := 2
+        bars_since_crossdown := 0
+        highest_price_since_crossdown := high
+        highest_price_kline := high
+        bars_since_highest := 0
+
+// 步骤3: 下穿后记录最高价
+// 如果变成空头趋势（ema12 < ema144 < ema565），则重置状态
+if uptrend_state == 2
+    // 检查是否变成空头趋势
+    if is_downtrend
+        uptrend_state := 0
+        bars_since_crossdown := 0
+        highest_price_since_crossdown := na
+        highest_price_kline := na
+        bars_since_highest := 0
+    else
+        bars_since_crossdown += 1
+        
+        // 更新下穿后的最高价
+        if na(highest_price_since_crossdown) or high > highest_price_since_crossdown
+            highest_price_since_crossdown := high
+            highest_price_kline := high
+            bars_since_highest := 0
+        else
+            bars_since_highest += 1
+        
+        // 当超过42根K线，最高价没变化，则在低于最高价1%、2%的位置开单（不包括原价）
+        if bars_since_highest >= 42 and na(entry_price) and strategy.position_size == 0
+            // 在两个位置开单：低于最高价1%和2%
+            price_1 = highest_price_since_crossdown * (1 - 0.01)  // 低于最高价1%
+            price_2 = highest_price_since_crossdown * (1 - 0.02)  // 低于最高价2%
+            
+            strategy.entry("Short_1", strategy.short, qty=ENTRY_QTY, limit=price_1)
+            strategy.entry("Short_2", strategy.short, qty=ENTRY_QTY, limit=price_2)
+            
+            // 标记开单位置
+            label.new(bar_index, highest_price_since_crossdown, 
+                      "开单位置\n最高价:" + str.tostring(highest_price_since_crossdown, "#.##") + 
+                      "\n价格1(-1%):" + str.tostring(price_1, "#.##") + 
+                      "\n价格2(-2%):" + str.tostring(price_2, "#.##"), 
+                      yloc=yloc.abovebar, color=color.orange, textcolor=color.white, style=label.style_label_down)
+
+// 检测开仓成交：当limit订单成交时，strategy.position_size会变为负值
+if na(entry_price) and strategy.position_size < 0
+    // 记录开仓价格（使用当前收盘价）
+    entry_price := close
+    entry_highest_price := high
+    bars_since_entry := 0
+    close_above_entry_count := 0
+
+// 步骤4: 开仓后的管理逻辑
+if not na(entry_price) and strategy.position_size < 0
+    bars_since_entry += 1
+    
+    // 记录开仓后的最高价（使用high，持续更新，用于止损）
+    if na(entry_highest_price) or high > entry_highest_price
+        entry_highest_price := high
+    
+    // 记录收盘价大于开仓价的次数
+    if close > entry_price
+        close_above_entry_count += 1
+    
+    // 逻辑1: 如果收盘价大于开仓价的次数大于4，且价格低于开仓成本，就平仓
+    if close_above_entry_count > 4 and close < entry_price
+        strategy.close_all(comment="站稳后低于成本平仓")
+        entry_price := na
+        entry_highest_price := na
+        bars_since_entry := 0
+        close_above_entry_count := 0
+        highest_in_8_bars := na
+    
+    // 逻辑2和3: 8根K线内的处理
+    if bars_since_entry <= 8
+        // 8根K线内不设置止损，等待逻辑1的条件触发平仓
+        // 如果到第8根K线还没平仓，强制平仓
+        if bars_since_entry == 8 and strategy.position_size < 0
+            strategy.close_all(comment="8根K线后强制平仓")
+            entry_price := na
+            entry_highest_price := na
+            bars_since_entry := 0
+            close_above_entry_count := 0
+            highest_in_8_bars := na
+    else
+        // 逻辑3: 如果记录超出8根k线（说明没有被强制平仓），就取8根k线中最高的价格，作为止损
+        if strategy.position_size < 0
+            // 计算最近8根K线的最高价
+            highest_in_8_bars := ta.highest(high, 8)
+            // 设置止损
+            strategy.exit("SL_8bars", stop=highest_in_8_bars)
+
+// 步骤5: 止盈逻辑 - 如果出现空头趋势，在开仓价格的10%、20%、26%的地方止盈
+if not na(entry_price) and strategy.position_size < 0 and is_downtrend
+    tp1_price = entry_price * (1 - 0.10)  // 低于开仓价10%
+    tp2_price = entry_price * (1 - 0.20)  // 低于开仓价20%
+    tp3_price = entry_price * (1 - 0.26)  // 低于开仓价26%
+    
+    // 检查是否达到止盈位
+    if close <= tp3_price
+        strategy.close_all(comment="TP3 26%")
+        entry_price := na
+        entry_highest_price := na
+        bars_since_entry := 0
+        close_above_entry_count := 0
+        highest_in_8_bars := na
+    else if close <= tp2_price
+        strategy.close_all(comment="TP2 20%")
+        entry_price := na
+        entry_highest_price := na
+        bars_since_entry := 0
+        close_above_entry_count := 0
+        highest_in_8_bars := na
+    else if close <= tp1_price
+        strategy.close_all(comment="TP1 10%")
+        entry_price := na
+        entry_highest_price := na
+        bars_since_entry := 0
+        close_above_entry_count := 0
+        highest_in_8_bars := na
+
+// 如果持仓被平掉，重置相关变量
+if strategy.position_size == 0 and not na(entry_price)
+    entry_price := na
+    entry_highest_price := na
+    bars_since_entry := 0
+    close_above_entry_count := 0
+    highest_in_8_bars := na
+
+// ============================================================================
+// 第五部分: 可视化
+// ============================================================================
+
+// EMA绘制
+plot(ema12, color=color.blue, linewidth=1, title="EMA12")
+plot(ema144, color=color.red, linewidth=1, title="EMA144")
+plot(ema565, color=color.purple, linewidth=1, title="EMA565")
+
+// 趋势背景
+bgcolor(is_uptrend ? color.new(color.green, 95) : na, title="Uptrend Background")
+bgcolor(is_downtrend ? color.new(color.red, 95) : na, title="Downtrend Background")
+
+// 下穿信号标记
+plotshape(ema12_crossdown_565 and uptrend_state == 1 and ema12 < ema565 and ema565 < ema144, location=location.abovebar,
+          color=color.red, size=size.small, text="↓", title="Cross Down Signal")
+
+// 开仓标记
+plotshape(not na(entry_price) and bars_since_entry == 1, location=location.abovebar,
+          color=color.orange, size=size.normal, text="SELL", title="Entry Signal")
+
+// 显示关键价格
+plot(highest_price_since_crossdown, color=color.yellow, linewidth=2, title="Highest Since Crossdown")
+plot(entry_highest_price, color=color.red, linewidth=1, style=plot.style_cross, title="Entry Highest")
+plot(highest_in_8_bars, color=color.red, linewidth=2, style=plot.style_line, title="Stop Loss (8 bars)")
+
+// 显示开单价格线（当满足开单条件时）
+var float pending_price_1 = na
+var float pending_price_2 = na
+
+if uptrend_state == 2 and bars_since_highest >= 42 and na(entry_price) and strategy.position_size == 0
+    pending_price_1 := highest_price_since_crossdown * (1 - 0.01)
+    pending_price_2 := highest_price_since_crossdown * (1 - 0.02)
+else if not na(entry_price) or strategy.position_size < 0
+    pending_price_1 := na
+    pending_price_2 := na
+
+plot(pending_price_1, color=color.green, linewidth=1, style=plot.style_line, title="Entry Price 1 (-1%)")
+plot(pending_price_2, color=color.blue, linewidth=1, style=plot.style_line, title="Entry Price 2 (-2%)")
+
+// 标签显示状态
+if ema12_crossdown_565 and uptrend_state == 1 and ema12 < ema565 and ema565 < ema144
+    label.new(bar_index, high, "第一次下穿EMA565\n开始记录", 
+              yloc=yloc.abovebar, color=color.red, textcolor=color.white, style=label.style_label_down)
+
+// 显示状态信息（每10根K线显示一次，或者接近42根时显示）
+if uptrend_state == 2 and na(entry_price) and strategy.position_size == 0
+    if bars_since_highest >= 42
+        label.new(bar_index, highest_price_since_crossdown, 
+                  "满足开单条件！\n最高价:" + str.tostring(highest_price_since_crossdown, "#.##") + 
+                  "\n已过K线:" + str.tostring(bars_since_highest), 
+                  yloc=yloc.abovebar, color=color.orange, textcolor=color.white, style=label.style_label_down)
+    else if bars_since_highest >= 30 or bars_since_highest % 10 == 0
+        label.new(bar_index, highest_price_since_crossdown, 
+                  "记录中...\n最高价:" + str.tostring(highest_price_since_crossdown, "#.##") + 
+                  "\n已过K线:" + str.tostring(bars_since_highest) + "/42", 
+                  yloc=yloc.abovebar, color=color.yellow, textcolor=color.black, style=label.style_label_down, size=size.tiny)
+

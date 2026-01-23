@@ -1,132 +1,278 @@
-//@version=5
-library("VegasChannelLib")
+//@version=6
+library("VegasChannelLibrary", overlay=false)
+// ============================================================================
+// Vegas Channel 策略库
+// 版本: 2.0
+// 描述: 包含Vegas Channel策略常用的工具函数
+// 
+// 脚本名称建议: "Vegas Channel Library" 或 "Vegas Channel Lib"
+// ============================================================================
 
-// ============= EMA计算 =============
+// ============================================================================
+// 第一部分: EMA计算函数
+// ============================================================================
+
+/// @function f_calculate_emas
+/// @description 计算5条EMA指标（Vegas Channel标准配置）
+/// @param len12 EMA12的周期
+/// @param len144 EMA144的周期
+/// @param len156 EMA156的周期
+/// @param len565 EMA565的周期
+/// @param len676 EMA676的周期
+/// @returns [ema12, ema144, ema156, ema565, ema676] 返回5条EMA值的数组
+/// @example
+///     [ema12, ema144, ema156, ema565, ema676] = f_calculate_emas(12, 144, 156, 565, 676)
 export f_calculate_emas(int len12, int len144, int len156, int len565, int len676) =>
     [ta.ema(close, len12), ta.ema(close, len144), ta.ema(close, len156), ta.ema(close, len565), ta.ema(close, len676)]
 
-// ============= 空头趋势检测 =============
+// ============================================================================
+// 第二部分: 趋势判断函数
+// ============================================================================
+
+/// @function f_is_downtrend
+/// @description 检测空头趋势（Vegas Channel标准判断）
+/// @param ema12 EMA12的值
+/// @param ema144 EMA144的值
+/// @param ema156 EMA156的值
+/// @param ema565 EMA565的值
+/// @param ema676 EMA676的值
+/// @returns bool 返回true表示空头趋势，false表示非空头趋势
+/// @note 判断条件: ema12 < min(ema144, ema156) < min(ema565, ema676)
+/// @example
+///     downtrend = f_is_downtrend(ema12, ema144, ema156, ema565, ema676)
+///     if downtrend
+///         // 执行空头策略逻辑
 export f_is_downtrend(float ema12, float ema144, float ema156, float ema565, float ema676) =>
     ema12 < math.min(ema144, ema156) and math.min(ema144, ema156) < math.min(ema565, ema676)
 
-// ============= 循环队列 =============
-export type CircularQueue
-    array<float> data
-    int capacity
-    int head
-    int size
+/// @function f_is_uptrend
+/// @description 检测多头趋势（Vegas Channel标准判断）
+/// @param ema12 EMA12的值
+/// @param ema144 EMA144的值
+/// @param ema156 EMA156的值
+/// @param ema565 EMA565的值
+/// @param ema676 EMA676的值
+/// @returns bool 返回true表示多头趋势，false表示非多头趋势
+/// @note 判断条件: ema12 > max(ema144, ema156) > max(ema565, ema676)
+/// @example
+///     uptrend = f_is_uptrend(ema12, ema144, ema156, ema565, ema676)
+///     if uptrend
+///         // 执行多头策略逻辑
+export f_is_uptrend(float ema12, float ema144, float ema156, float ema565, float ema676) =>
+    ema12 > math.max(ema144, ema156) and math.max(ema144, ema156) > math.max(ema565, ema676)
 
-export f_create_queue(int capacity) =>
-    queue = CircularQueue.new()
-    queue.data := array.new<float>(capacity)
-    queue.capacity := capacity
-    queue.head := 0
-    queue.size := 0
-    queue
+// ============================================================================
+// 第三部分: 波动率计算函数
+// ============================================================================
 
-export f_queue_push(CircularQueue queue, float value) =>
-    if queue.size < queue.capacity
-        array.set(queue.data, queue.size, value)
-        queue.size += 1
+/// @function f_calculate_volatility
+/// @description 计算真实波幅指标(ATR) - 反映市场波动性
+/// @param period ATR计算周期（K线根数），默认14
+/// @returns float 返回ATR值，代表市场波动强度
+/// @note 
+///     - ATR值越大，市场波动越剧烈
+///     - ATR值越小，市场波动越平缓
+///     - 建议值范围：14-20（根据策略需求调整）
+/// @example
+///     atr_value = f_calculate_volatility(14)
+///     if atr_value > 100
+///         // 波动率高，适合空单
+///     else
+///         // 波动率低，适合多单
+export f_calculate_volatility(int period) =>
+    ta.atr(period)
+
+// ============================================================================
+// 第四部分: 价格记录函数
+// ============================================================================
+
+/// @function f_record_price
+/// @description 记录价格到数组（根据阈值分类）
+/// @param price 要记录的价格（通常使用close）
+/// @param threshold 阈值（通常使用EMA12）
+/// @param high_arr 高于阈值的价格数组（引用传递，会被修改）
+/// @param low_arr 低于阈值的价格数组（引用传递，会被修改）
+/// @param capacity 数组最大容量，超过容量会删除最早的数据
+/// @returns void 无返回值，直接修改传入的数组
+/// @note 
+///     - 如果 price > threshold，将price添加到high_arr
+///     - 如果 price <= threshold，将price添加到low_arr
+///     - 数组采用循环队列管理，超过容量自动删除最早数据
+///     - 建议capacity值：48（约2天的4H数据）
+/// @example
+///     var array<float> highprice = array.new<float>()
+///     var array<float> lowprice = array.new<float>()
+///     // 每根K线调用一次
+///     f_record_price(close, ema12, highprice, lowprice, 48)
+export f_record_price(float price, float threshold, array<float> high_arr, array<float> low_arr, int capacity) =>
+    if price > threshold
+        array.push(high_arr, price)
     else
-        array.set(queue.data, queue.head, value)
-        queue.head := (queue.head + 1) % queue.capacity
+        array.push(low_arr, price)
 
-export f_queue_get(CircularQueue queue, int index) =>
-    if index < 0 or index >= queue.size
-        0.0
-    else
-        idx = (queue.head + index) % queue.capacity
-        array.get(queue.data, idx)
+    // 循环队列管理: 超过容量则删除最早数据
+    if array.size(high_arr) > capacity
+        array.shift(high_arr)
+    if array.size(low_arr) > capacity
+        array.shift(low_arr)
 
-export f_queue_size(CircularQueue queue) =>
-    queue.size
+// ============================================================================
+// 第五部分: 移动止损计算函数
+// ============================================================================
 
-export f_queue_max(CircularQueue queue) =>
-    max_val = 0.0
-    for i = 0 to queue.size - 1
-        val = f_queue_get(queue, i)
-        if val > max_val
-            max_val := val
-    max_val
-
-export f_queue_min(CircularQueue queue) =>
-    min_val = 999999.0
-    for i = 0 to queue.size - 1
-        val = f_queue_get(queue, i)
-        if val < min_val
-            min_val := val
-    min_val
-
-// ============= 斜率计算（线性回归） =============
-export f_calculate_slope(float source, int period) =>
-    if bar_index < period
-        0.0
-    else
-        x_sum = 0.0
-        y_sum = 0.0
-        xy_sum = 0.0
-        x2_sum = 0.0
-        for i = 0 to period - 1
-            x = float(i)
-            y = source[i]
-            x_sum += x
-            y_sum += y
-            xy_sum += x * y
-            x2_sum += x * x
-        n = float(period)
-        numerator = n * xy_sum - x_sum * y_sum
-        denominator = n * x2_sum - x_sum * x_sum
-        slope = denominator != 0 ? numerator / denominator : 0.0
-        math.atan(slope) * 180.0 / math.pi
-
-// ============= 斜率判断 =============
-export f_slope_below_threshold(float slope, float threshold) =>
-    math.abs(slope) < threshold
-
-export f_slope_above_threshold(float slope, float threshold) =>
-    slope > threshold
-
-// ============= 价格记录 =============
-export f_record_price(float price, float ema12, array<float> highprice_arr, array<float> lowprice_arr) =>
-    if price > ema12
-        array.push(highprice_arr, price)
-    else
-        array.push(lowprice_arr, price)
-
-// ============= 移动止损计算 =============
-export f_calculate_trailing_stop(bool is_long, float entry_price, array<float> highprice_arr, array<float> lowprice_arr) =>
-    total_count = array.size(highprice_arr) + array.size(lowprice_arr)
-    if total_count <= 8
+/// @function f_calculate_trailing_sl
+/// @description 计算移动止损价格（基于价格数组的平均值）
+/// @param is_long 是否为多单（true=多单, false=空单）
+/// @param entry_price 入场价格
+/// @param high_arr 高于阈值的价格数组
+/// @param low_arr 低于阈值的价格数组
+/// @param threshold 价格记录阈值（K线数），低于此值返回入场价
+/// @returns float 返回计算出的止损价格
+/// @note 
+///     - 多单：使用low_arr的平均值作为止损（价格下跌时止损）
+///     - 空单：使用high_arr的平均值作为止损（价格上涨时止损）
+///     - 如果数组总数 <= threshold，返回入场价（不设置止损）
+///     - 如果数组为空或不符合条件，返回入场价
+/// @example
+///     // 多单止损
+///     trailing_sl = f_calculate_trailing_sl(true, entry_price, highprice, lowprice, 8)
+///     strategy.exit("SL", stop=trailing_sl)
+///     
+///     // 空单止损
+///     trailing_sl = f_calculate_trailing_sl(false, entry_price, highprice, lowprice, 8)
+///     strategy.exit("SL", stop=trailing_sl)
+export f_calculate_trailing_sl(bool is_long, float entry_price, array<float> high_arr, array<float> low_arr, int threshold) =>
+    total_count = array.size(high_arr) + array.size(low_arr)
+    if total_count <= threshold
         entry_price
     else
         if is_long
-            if array.size(highprice_arr) < array.size(lowprice_arr)
+            // 多单：使用低点平均值作为止损
+            if array.size(high_arr) < array.size(low_arr)
                 entry_price
             else
-                lowprice_sum = 0.0
-                for i = 0 to array.size(lowprice_arr) - 1
-                    lowprice_sum += array.get(lowprice_arr, i)
-                lowprice_sum / array.size(lowprice_arr)
+                if array.size(low_arr) == 0
+                    entry_price
+                else
+                    sum = 0.0
+                    for i = 0 to array.size(low_arr) - 1
+                        sum += array.get(low_arr, i)
+                    sum / array.size(low_arr)
         else
-            if array.size(highprice_arr) > array.size(lowprice_arr)
+            // 空单：使用高点平均值作为止损
+            if array.size(high_arr) > array.size(low_arr)
                 entry_price
             else
-                highprice_sum = 0.0
-                for i = 0 to array.size(highprice_arr) - 1
-                    highprice_sum += array.get(highprice_arr, i)
-                highprice_sum / array.size(highprice_arr)
+                if array.size(high_arr) == 0
+                    entry_price
+                else
+                    sum = 0.0
+                    for i = 0 to array.size(high_arr) - 1
+                        sum += array.get(high_arr, i)
+                    sum / array.size(high_arr)
 
-// ============= 止盈计算 =============
-export f_get_take_profit_levels(float entry_price, bool is_long) =>
-    if is_long
-        [entry_price * 1.10, entry_price * 1.15, entry_price * 1.25]
-    else
-        [entry_price * 0.90, entry_price * 0.85, entry_price * 0.75]
+// ============================================================================
+// 第六部分: 价格接近EMA检查函数
+// ============================================================================
 
-// ============= 止损计算 =============
-export f_get_stop_loss(float entry_price, bool is_long, float sl_percent=5) =>
-    if is_long
-        entry_price * (1 - sl_percent / 100)
-    else
-        entry_price * (1 + sl_percent / 100)
+/// @function f_check_price_near_ema
+/// @description 检查价格是否接近指定EMA（容差范围）
+/// @param price 要检查的价格（通常使用close）
+/// @param ema EMA的值
+/// @param offset_percent 容差百分比（例如2.0表示±2%）
+/// @returns bool 返回true表示价格在EMA的容差范围内
+/// @note 
+///     - 判断条件: ema * (1 - offset_percent/100) <= price <= ema * (1 + offset_percent/100)
+///     - 通常用于开仓条件判断
+///     - 建议offset_percent值：1.0-3.0
+/// @example
+///     if f_check_price_near_ema(close, ema12, 2.0)
+///         // 价格在EMA12的±2%范围内，可以开仓
+///         strategy.entry("Long", strategy.long)
+export f_check_price_near_ema(float price, float ema, float offset_percent) =>
+    price >= ema * (1 - offset_percent / 100) and price <= ema * (1 + offset_percent / 100)
+
+/// @function f_check_entry_price_short
+/// @description 检查价格是否在多个EMA范围内（用于空单开仓）
+/// @param price 要检查的价格（通常使用close）
+/// @param ema144 EMA144的值
+/// @param ema150 EMA150的值
+/// @param ema156 EMA156的值
+/// @param ema565 EMA565的值
+/// @param ema600 EMA600的值
+/// @param offset_percent 容差百分比
+/// @returns bool 返回true表示价格接近任意一个EMA
+/// @note 
+///     - 只要价格接近任意一个EMA（在容差范围内），就返回true
+///     - 通常用于空单开仓条件判断
+/// @example
+///     if f_check_entry_price_short(close, ema144, ema150, ema156, ema565, ema600, 2.0)
+///         // 价格接近任意一个EMA，可以开空单
+///         strategy.entry("Short", strategy.short)
+export f_check_entry_price_short(float price, float ema144, float ema150, float ema156, float ema565, float ema600, float offset_percent) =>
+    (f_check_price_near_ema(price, ema144, offset_percent) or
+     f_check_price_near_ema(price, ema150, offset_percent) or
+     f_check_price_near_ema(price, ema156, offset_percent) or
+     f_check_price_near_ema(price, ema565, offset_percent) or
+     f_check_price_near_ema(price, ema600, offset_percent))
+
+// ============================================================================
+// 使用说明
+// ============================================================================
+//
+// 如何在策略中使用本库：
+//
+// 1. 复制本文件的所有函数到你的策略文件中（放在策略代码的开头部分）
+//
+// 2. 或者使用Pine Script的import功能（如果支持）：
+//    import "vegas_channel_lib.pine" as lib
+//
+// 3. 基本使用流程：
+//
+//    // 步骤1: 计算EMA
+//    [ema12, ema144, ema156, ema565, ema676] = f_calculate_emas(12, 144, 156, 565, 676)
+//
+//    // 步骤2: 判断趋势
+//    downtrend = f_is_downtrend(ema12, ema144, ema156, ema565, ema676)
+//    uptrend = f_is_uptrend(ema12, ema144, ema156, ema565, ema676)
+//
+//    // 步骤3: 计算波动率
+//    atr_value = f_calculate_volatility(14)
+//
+//    // 步骤4: 初始化价格记录数组
+//    var array<float> highprice = array.new<float>()
+//    var array<float> lowprice = array.new<float>()
+//
+//    // 步骤5: 持仓后记录价格
+//    if strategy.position_size > 0
+//        f_record_price(close, ema12, highprice, lowprice, 48)
+//        trailing_sl = f_calculate_trailing_sl(true, entry_price, highprice, lowprice, 8)
+//        strategy.exit("SL", stop=trailing_sl)
+//
+//    // 步骤6: 检查开仓条件
+//    if f_check_price_near_ema(close, ema12, 2.0)
+//        strategy.entry("Long", strategy.long)
+//
+// ============================================================================
+// 参数建议值
+// ============================================================================
+//
+// EMA周期：
+//   - EMA12: 12（快速线）
+//   - EMA144: 144（中期线）
+//   - EMA156: 156（中期线）
+//   - EMA565: 565（长期线）
+//   - EMA676: 676（长期线）
+//
+// ATR参数：
+//   - ATR周期: 14（标准值）
+//   - ATR阈值: 80-150（根据币种调整）
+//
+// 价格记录参数：
+//   - 数组容量: 48（约2天的4H数据）
+//   - 记录阈值: 8（至少8根K线才开始计算止损）
+//
+// 开仓参数：
+//   - 价格容差: 1.0-3.0%（通常使用2.0%）
+//
+// ============================================================================

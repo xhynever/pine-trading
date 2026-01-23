@@ -116,17 +116,20 @@ var bool has_new_entry_signal = false     // 新开仓信号标记
 // 分批头寸管理 - 每批0.1仓位
 var array<float> batch_entry_prices = array.new<float>()  // 各批入场价
 var array<float> batch_sl_prices = array.new<float>()     // 各批止损价
-var array<float> batch_pending_prices = array.new<float>() // 各批限价单价格
 var array<string> batch_ids = array.new<string>()         // 各批订单ID (Long_1, Long_2...)
 var array<bool> batch_opened = array.new<bool>()          // 各批是否已开仓
 var array<bool> batch_has_stop_loss = array.new<bool>()   // 各批是否已触发过止损
+
+// 限价单追踪 - 用于管理未成交的限价单
+var array<int> pending_bars_since_crossover = array.new<int>()  // 每个待挂限价单从上穿以来经过的K线数
+var array<bool> pending_order_placed = array.new<bool>()        // 是否已挂单
 
 // 价格记录数组
 var array<float> highprice = array.new<float>()  // 高于EMA12的收盘价
 var array<float> lowprice = array.new<float>()   // 低于EMA12的收盘价
 
-// 时间追踪
-var int bars_since_entry = 0       // 入场后经过的K线数
+// 时间追踪 - 分别追踪每个持仓的K线数
+var array<int> bars_since_entry_per_batch = array.new<int>()  // 每个批次入场后经过的K线数
 
 // ============================================================================
 // 第五部分: 交易逻辑 - 趋势转变和信号
@@ -151,66 +154,70 @@ if downtrend_confirmed and ema12_crossover
 else
     has_crossover_signal := false
 
-// 步骤2: EMA12上穿2次后，挂限价单
-// 在EMA12和EMA144以及低于它们2%的位置挂限价单
-if downtrend_confirmed and ema12_crossover_count == 2 and strategy.position_size == 0
-    // 挂EMA12 - 2%的限价单
-    pending_price_ema12 = ema12 * (1 - PENDING_ORDER_OFFSET / 100)
+// 步骤2: 限价单管理和开单逻辑
+// 第2次上穿时，开始尝试在EMA12开第一单
+if downtrend_confirmed and ema12_crossover_count == 2 and array.size(batch_ids) == 0
+    if array.size(pending_bars_since_crossover) == 0
+        // 初始化第一个待挂单的计数
+        array.push(pending_bars_since_crossover, 0)
+        array.push(pending_order_placed, false)
 
-    // 挂EMA144 - 2%的限价单
-    pending_price_ema144 = ema144 * (1 - PENDING_ORDER_OFFSET / 100)
+    // 在20根K线内，持续尝试在EMA12 * (1 - 2%) 开单
+    if array.get(pending_bars_since_crossover, 0) < 20
+        pending_price_1 = ema12 * (1 - PENDING_ORDER_OFFSET / 100)
 
-    // 记录待挂单信息
-    if array.size(batch_pending_prices) == 0
-        array.push(batch_pending_prices, pending_price_ema12)
-        array.push(batch_pending_prices, pending_price_ema144)
+        // 如果还没挂单，就挂单
+        if not array.get(pending_order_placed, 0)
+            strategy.entry("Long_1", strategy.long, qty=ENTRY_QTY, limit=pending_price_1)
+            array.set(pending_order_placed, 0, true)
+        else
+            // 已挂单，更新限价单价格
+            strategy.entry("Long_1", strategy.long, qty=ENTRY_QTY, limit=pending_price_1)
+    else
+        // 超过20根K线，取消该限价单
+        strategy.cancel("Long_1")
+        array.clear(pending_bars_since_crossover)
+        array.clear(pending_order_placed)
 
-// 步骤3: 监控限价单执行和K线移动
-// 限价单会随着K线移动而调整
-if downtrend_confirmed and ema12_crossover_count >= 2 and array.size(batch_pending_prices) > 0
-    // 更新待挂单价格（跟踪EMA移动）
-    if array.size(batch_pending_prices) >= 1
-        array.set(batch_pending_prices, 0, ema12 * (1 - PENDING_ORDER_OFFSET / 100))
-    if array.size(batch_pending_prices) >= 2
-        array.set(batch_pending_prices, 1, ema144 * (1 - PENDING_ORDER_OFFSET / 100))
+// 当第一单实际成交后，开始准备第二单
+if downtrend_confirmed and ema12_crossover_count >= 2 and array.size(batch_ids) == 1 and array.size(pending_bars_since_crossover) < 2
+    if array.size(pending_bars_since_crossover) == 1
+        array.push(pending_bars_since_crossover, 0)
+        array.push(pending_order_placed, false)
 
-    // 检查是否触及限价单
-    if array.size(batch_ids) < 2
-        // 检查EMA12限价单
-        if array.size(batch_ids) == 0 and close <= ema12 * (1 - PENDING_ORDER_OFFSET / 100)
-            entry_price = close
-            batch_id = "Long_1"
-            strategy.entry(batch_id, strategy.long, qty=ENTRY_QTY)
-            has_new_entry_signal := true
+    // 在20根K线内，持续尝试在EMA144 * (1 - 2%) 开第二单
+    if array.get(pending_bars_since_crossover, 1) < 20
+        pending_price_2 = ema144 * (1 - PENDING_ORDER_OFFSET / 100)
 
-            // 初始止损 = 入场价 - 2*ATR
-            sl_price = entry_price - (atr_value * SL_ATR_MULTIPLE)
+        if not array.get(pending_order_placed, 1)
+            strategy.entry("Long_2", strategy.long, qty=ENTRY_QTY, limit=pending_price_2)
+            array.set(pending_order_placed, 1, true)
+        else
+            strategy.entry("Long_2", strategy.long, qty=ENTRY_QTY, limit=pending_price_2)
+    else
+        strategy.cancel("Long_2")
+        if array.size(pending_bars_since_crossover) > 1
+            array.remove(pending_bars_since_crossover, 1)
+            array.remove(pending_order_placed, 1)
 
-            array.push(batch_entry_prices, entry_price)
-            array.push(batch_sl_prices, sl_price)
-            array.push(batch_ids, batch_id)
-            array.push(batch_opened, true)
-            array.push(batch_has_stop_loss, false)
+// 更新待挂单的K线计数
+if array.size(pending_bars_since_crossover) > 0
+    for i = 0 to array.size(pending_bars_since_crossover) - 1
+        array.set(pending_bars_since_crossover, i, array.get(pending_bars_since_crossover, i) + 1)
 
-            array.clear(highprice)
-            array.clear(lowprice)
-            bars_since_entry := 0
-
-        // 检查EMA144限价单
-        if array.size(batch_ids) == 1 and close <= ema144 * (1 - PENDING_ORDER_OFFSET / 100)
-            entry_price = close
-            batch_id = "Long_2"
-            strategy.entry(batch_id, strategy.long, qty=ENTRY_QTY)
-            has_new_entry_signal := true
-
-            // 初始止损 = 入场价 - 2*ATR
-            sl_price = entry_price - (atr_value * SL_ATR_MULTIPLE)
-
-            array.push(batch_entry_prices, entry_price)
-            array.push(batch_sl_prices, sl_price)
-            array.push(batch_ids, batch_id)
-            array.push(batch_opened, true)
-            array.push(batch_has_stop_loss, false)
+// 检查成交：当limit订单成交时，strategy.position_size会增加
+if strategy.position_size > 0
+    has_new_entry_signal := true
+    // 成交后记录入场价和初始止损
+    if array.size(batch_entry_prices) == 0 and close > 0
+        entry_price = close
+        sl_price = entry_price - (atr_value * SL_ATR_MULTIPLE)
+        array.push(batch_entry_prices, entry_price)
+        array.push(batch_sl_prices, sl_price)
+        array.push(batch_ids, "Long_1")
+        array.push(batch_opened, true)
+        array.push(batch_has_stop_loss, false)
+        array.push(bars_since_entry_per_batch, 0)
 else
     has_new_entry_signal := false
 
@@ -220,7 +227,9 @@ else
 
 // 多单持仓管理
 if strategy.position_size > 0 and array.size(batch_ids) > 0
-    bars_since_entry += 1
+    // 更新每个批次的K线计数
+    for i = 0 to array.size(bars_since_entry_per_batch) - 1
+        array.set(bars_since_entry_per_batch, i, array.get(bars_since_entry_per_batch, i) + 1)
 
     // 记录价格 (根据EMA12分类)
     f_record_price(close, ema12, highprice, lowprice, QUEUE_CAPACITY)
@@ -230,6 +239,7 @@ if strategy.position_size > 0 and array.size(batch_ids) > 0
         batch_id_val = array.get(batch_ids, i)
         entry_price = array.get(batch_entry_prices, i)
         current_sl = array.get(batch_sl_prices, i)
+        bars_count = array.get(bars_since_entry_per_batch, i)
 
         // 条件1: 开单后低于成本价5%直接止损
         hardstop_price = entry_price * (1 - 0.05)
@@ -238,7 +248,7 @@ if strategy.position_size > 0 and array.size(batch_ids) > 0
             array.set(batch_has_stop_loss, i, true)
 
         // 条件2: 第8根K线时，检查高于EMA12的收盘价数量
-        if bars_since_entry == 8
+        if bars_count == 8
             high_count = array.size(highprice)
             // 如果高于EMA12的K线数少于4根，则在成本价平仓
             if high_count < 4
@@ -248,11 +258,12 @@ if strategy.position_size > 0 and array.size(batch_ids) > 0
                 array.remove(batch_ids, i)
                 array.remove(batch_opened, i)
                 array.remove(batch_has_stop_loss, i)
+                array.remove(bars_since_entry_per_batch, i)
                 break
 
         // 条件3: 8根K线后，动态调整止损
         // 在8根K线内，最多5%止损。8根K线后，动态调整止损
-        if bars_since_entry > 8
+        if bars_count > 8
             if not array.get(batch_has_stop_loss, i)
                 new_sl = entry_price - (atr_value * SL_ATR_MULTIPLE)
                 // 更新止损（止损只能向上调整，不能向下）
@@ -263,7 +274,7 @@ if strategy.position_size > 0 and array.size(batch_ids) > 0
                     strategy.exit("SL_" + batch_id_val, batch_id_val, stop=current_sl)
             else
                 strategy.exit("SL_" + batch_id_val, batch_id_val, stop=current_sl)
-        else if bars_since_entry <= 8
+        else if bars_count <= 8
             // 8根K线内保持固定止损（成本价-5%）
             strategy.exit("SL_" + batch_id_val, batch_id_val, stop=hardstop_price)
 
@@ -287,21 +298,18 @@ if strategy.position_size > 0 and array.size(batch_ids) > 0
             array.push(batch_opened, true)
             array.push(batch_has_stop_loss, false)
 
-// 止损触发时，重置上穿计数
+// 止损或止盈触发时，清除持仓相关数组（保留上穿计数，继续等待后续机会）
 if strategy.position_size == 0 and array.size(batch_ids) > 0
     array.clear(batch_entry_prices)
     array.clear(batch_sl_prices)
     array.clear(batch_ids)
     array.clear(batch_opened)
     array.clear(batch_has_stop_loss)
-    array.clear(batch_pending_prices)
+    array.clear(bars_since_entry_per_batch)
     array.clear(highprice)
     array.clear(lowprice)
 
-    // 重置上穿计数为0
-    ema12_crossover_count := 0
-    downtrend_confirmed := false
-    bars_since_entry := 0
+    // 不重置上穿计数，只在形成多头趋势时才重置
 
 // ============================================================================
 // 第七部分: 止盈执行
