@@ -1,0 +1,249 @@
+//@version=5
+strategy("4H Downtrend Reversal Long Strategy",
+         overlay=true,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=20)
+
+// ============= EMA计算 =============
+ema12 = ta.ema(close, 12)
+ema144 = ta.ema(close, 144)
+ema565 = ta.ema(close, 565)
+
+// ============= 趋势检测 =============
+// 空头趋势：EMA12 < EMA144 < EMA565
+downtrend_signal = ema12 < ema144 and ema144 < ema565
+// 多头趋势：EMA12 > EMA144 > EMA565
+uptrend_signal = ema12 > ema144 and ema144 > ema565
+
+// ============= 信号标记变量 =============
+var bool was_uptrend = false       // 曾经是多头趋势标记
+var bool was_downtrend = false     // 曾经是空头趋势标记
+var bool strategy_active = false   // 策略是否激活标记
+var int crossover_count = 0        // EMA12上穿EMA144的次数
+var int crossunder_count = 0       // EMA12下穿EMA144的次数
+var float ema12_low = 0.0          // 空头趋势中ema12的最低点
+var float price_low_downtrend = 0.0 // 空头趋势中的现价最低点
+var float price_low_after_cu = 0.0  // 下穿后到下一次上穿后的现价最低点
+var float limit_price = 0.0        // 限价单价格
+var bool long_entered = false      // 多单是否已入场
+var bool recording_price_low = false // 是否正在记录下穿后的现价最低点
+var float stop_loss_price = 0.0    // 止损价格（空头趋势中的现价最低点）
+var bool limit_order_placed = false // 是否已下限价单
+
+// ============= 三标记位状态管理 =============
+// 1. 检测到多头趋势 - 清空所有值，多头标记为true
+if uptrend_signal and strategy.position_size == 0 and not limit_order_placed
+    was_uptrend := true
+    was_downtrend := false
+    strategy_active := false
+    crossover_count := 0
+    crossunder_count := 0
+    ema12_low := 0.0
+    price_low_downtrend := 0.0
+    price_low_after_cu := 0.0
+    recording_price_low := false
+
+// 2. 检测到空头趋势，且曾经是多头趋势 - 空头标记为true，策略激活为true
+if downtrend_signal and was_uptrend and not strategy_active and strategy.position_size == 0
+    was_downtrend := true
+    strategy_active := true
+    crossover_count := 0
+    crossunder_count := 0
+    ema12_low := ema12  // 记录进入空头趋势时ema12的值
+    price_low_downtrend := close  // 记录进入空头趋势时的现价
+    price_low_after_cu := 0.0
+    recording_price_low := false
+    limit_order_placed := false
+
+// 3. 检测到多头趋势，且策略激活 - 多头标记为true，策略激活为false，清空空头和下穿标记
+if uptrend_signal and strategy_active and strategy.position_size == 0 and not limit_order_placed
+    was_uptrend := true
+    was_downtrend := false
+    strategy_active := false
+    crossover_count := 0
+    crossunder_count := 0
+
+// ============= 在空头趋势中持续记录最低点 =============
+// 记录ema12最低点
+if strategy_active and downtrend_signal and strategy.position_size == 0
+    if ema12 < ema12_low
+        ema12_low := ema12
+
+// 记录空头趋势中的现价最低点
+if strategy_active and downtrend_signal and strategy.position_size == 0
+    if close < price_low_downtrend
+        price_low_downtrend := close
+
+// ============= EMA12与EMA144的交叉检测 =============
+// 检测下穿 - 只在策略激活时检测
+if strategy_active and ta.crossunder(ema12, ema144) and strategy.position_size == 0
+    crossunder_count := crossunder_count + 1
+    // 下穿后开始记录现价最低点
+    recording_price_low := true
+    price_low_after_cu := close
+
+// 检测上穿 - 只在策略激活时检测
+if strategy_active and ta.crossover(ema12, ema144) and strategy.position_size == 0
+    crossover_count := crossover_count + 1
+
+    // 如果正在记录下穿后的现价最低点，则继续更新
+    if recording_price_low
+        if close < price_low_after_cu
+            price_low_after_cu := close
+
+    // 第一次上穿后，停止记录
+    if crossover_count == 1
+        recording_price_low := false
+
+    // 第二次上穿后，设置限价单
+    if crossover_count == 2 and ema12_low > 0 and price_low_after_cu > 0
+        // 止损价格：使用空头趋势中的现价最低点
+        stop_loss_price := price_low_downtrend
+
+        // 限价单价格：ema12_low和price_low_after_cu的平均值
+        limit_price := (ema12_low + price_low_after_cu) / 2
+        limit_order_placed := true
+
+        // 分批派单（两笔各50%）
+        strategy.entry("Long1", strategy.long, qty=0.5, limit=limit_price)
+        strategy.entry("Long2", strategy.long, qty=0.5, limit=limit_price)
+
+// ============= 在下穿后到上穿之间记录现价最低点 =============
+if strategy_active and recording_price_low and strategy.position_size == 0
+    if close < price_low_after_cu
+        price_low_after_cu := close
+
+// ============= 检测开仓 =============
+if limit_order_placed and strategy.position_size > 0 and strategy.position_size[1] == 0
+    long_entered := true
+    limit_order_placed := false
+
+    // 重置状态，准备下一个信号
+    crossover_count := 0
+    crossunder_count := 0
+    recording_price_low := false
+
+if long_entered and strategy.position_size != 0
+    long_entered := false
+
+// ============= 止盈止损 =============
+if strategy.position_size > 0
+    // 止盈：在EMA144处平仓一半仓位
+    if close >= ema144
+        strategy.close("Long1", qty_percent=50)
+        strategy.close("Long2", qty_percent=50)
+
+    // 止损：使用空头趋势中的现价最低点
+    strategy.exit("SL Long", "Long1", stop=stop_loss_price)
+    strategy.exit("SL Long", "Long2", stop=stop_loss_price)
+
+// ============= 绘制指标 =============
+plot(ema12, "EMA12", color.yellow, linewidth=1)
+plot(ema144, "EMA144", color.blue, linewidth=2)
+plot(ema565, "EMA565", color.purple, linewidth=1)
+
+// ============= 绘制关键价位线 =============
+// 绘制ema12最低点（红色圆点）
+plot(strategy_active and ema12_low > 0 ? ema12_low : na, "EMA12 Low", color.red, linewidth=2, style=plot.style_circles)
+
+// 绘制空头趋势中的现价最低点（橙色圆点）
+plot(strategy_active and price_low_downtrend > 0 ? price_low_downtrend : na, "Price Low (Downtrend)", color.orange, linewidth=2, style=plot.style_circles)
+
+// 绘制下穿后到上穿的现价最低点（紫色圆点）
+plot(strategy_active and price_low_after_cu > 0 and recording_price_low ? price_low_after_cu : na, "Price Low (After CU)", color.purple, linewidth=2, style=plot.style_circles)
+
+// 绘制限价单价格线（蓝色虚线）
+plot(limit_order_placed and limit_price > 0 ? limit_price : na, "Limit Price", color.blue, linewidth=2, style=plot.style_linebr)
+
+// 绘制止损价格线（棕色虚线）
+plot(strategy.position_size > 0 ? stop_loss_price : na, "Stop Loss", color.maroon, linewidth=2, style=plot.style_linebr)
+
+// 绘制开单价格线（绿色叉号）
+plot(strategy.position_size > 0 ? limit_price : na, "Entry Price", color.green, linewidth=2, style=plot.style_cross)
+
+// ============= 标记入场和平仓 =============
+plotshape(long_entered, title="Long Entry", style=shape.circle, location=location.abovebar, color=color.green, size=size.small)
+
+// 平仓标记
+plotshape(strategy.position_size[1] > 0 and strategy.position_size == 0, title="Long Exit", style=shape.xcross, location=location.abovebar, color=color.green, size=size.small)
+
+// ============= 显示交叉标记 =============
+// 下穿标记（红色向下三角）- 只在状态2时显示
+plotshape(ta.crossunder(ema12, ema144) and strategy_active,
+         title="下穿",
+         style=shape.triangledown,
+         location=location.abovebar,
+         color=color.red,
+         size=size.small,
+         text="下穿")
+
+// 上穿标记（绿色向上三角）- 只在状态2时显示
+plotshape(ta.crossover(ema12, ema144) and strategy_active,
+         title="上穿",
+         style=shape.triangleup,
+         location=location.belowbar,
+         color=color.lime,
+         size=size.small,
+         text="上穿")
+
+// 状态标记
+// 多头趋势标记（蓝色方块）
+plotshape(was_uptrend,
+         title="状态1:多头",
+         style=shape.square,
+         location=location.bottom,
+         color=color.blue,
+         size=size.tiny,
+         text="1")
+
+// 空头趋势已初始化标记（黄色方块）
+plotshape(strategy_active,
+         title="状态2:空头初始化",
+         style=shape.square,
+         location=location.top,
+         color=color.yellow,
+         size=size.tiny,
+         text="2")
+
+// 限价单设置标记（蓝色菱形）
+plotshape(crossover_count == 2 and limit_order_placed[1] == false and limit_order_placed,
+         title="限价单设置",
+         style=shape.diamond,
+         location=location.abovebar,
+         color=color.blue,
+         size=size.normal,
+         text="限价")
+
+// ============= 调试信息 =============
+// 在图表上显示计数信息
+var table debugTable = table.new(position.top_right, 2, 10, border_width=1)
+if barstate.islast
+    table.cell(debugTable, 0, 0, "Was Uptrend", text_color=color.white, bgcolor=color.blue)
+    table.cell(debugTable, 1, 0, str.tostring(was_uptrend), text_color=color.white, bgcolor=color.blue)
+
+    table.cell(debugTable, 0, 1, "Was Downtrend", text_color=color.white, bgcolor=color.blue)
+    table.cell(debugTable, 1, 1, str.tostring(was_downtrend), text_color=color.white, bgcolor=color.blue)
+
+    table.cell(debugTable, 0, 2, "Strategy Active", text_color=color.white, bgcolor=color.blue)
+    table.cell(debugTable, 1, 2, str.tostring(strategy_active), text_color=color.white, bgcolor=color.blue)
+
+    table.cell(debugTable, 0, 3, "Crossover", text_color=color.white, bgcolor=color.blue)
+    table.cell(debugTable, 1, 3, str.tostring(crossover_count), text_color=color.white, bgcolor=color.blue)
+
+    table.cell(debugTable, 0, 4, "Crossunder", text_color=color.white, bgcolor=color.blue)
+    table.cell(debugTable, 1, 4, str.tostring(crossunder_count), text_color=color.white, bgcolor=color.blue)
+
+    table.cell(debugTable, 0, 5, "EMA12 Low", text_color=color.white, bgcolor=color.red)
+    table.cell(debugTable, 1, 5, str.tostring(ema12_low, "#.##"), text_color=color.white, bgcolor=color.red)
+
+    table.cell(debugTable, 0, 6, "Price Low (DT)", text_color=color.white, bgcolor=color.orange)
+    table.cell(debugTable, 1, 6, str.tostring(price_low_downtrend, "#.##"), text_color=color.white, bgcolor=color.orange)
+
+    table.cell(debugTable, 0, 7, "Price Low (CU)", text_color=color.white, bgcolor=color.purple)
+    table.cell(debugTable, 1, 7, str.tostring(price_low_after_cu, "#.##"), text_color=color.white, bgcolor=color.purple)
+
+    table.cell(debugTable, 0, 8, "Limit Price", text_color=color.white, bgcolor=color.blue)
+    table.cell(debugTable, 1, 8, str.tostring(limit_price, "#.##"), text_color=color.white, bgcolor=color.blue)
+
+    table.cell(debugTable, 0, 9, "Stop Loss", text_color=color.white, bgcolor=color.maroon)
+    table.cell(debugTable, 1, 9, str.tostring(stop_loss_price, "#.##"), text_color=color.white, bgcolor=color.maroon)

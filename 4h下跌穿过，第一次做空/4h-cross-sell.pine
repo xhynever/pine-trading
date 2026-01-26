@@ -42,25 +42,40 @@ var float highest_price_since_crossdown = na  // 下穿后的最高价
 var float highest_price_kline = na           // 单根K线最高价
 var int bars_since_highest = 0               // 最高价后经过的K线数
 
-// 开仓相关
-var float entry_price = na              // 开仓价格
+// 开仓相关（使用买入数量管理方式）
+var float entry_price = na              // 平均成本价
+var float total_position_size = 0.0     // 总持仓数量
 var float entry_highest_price = na      // 开仓后记录的最高价（持续更新）
 var int bars_since_entry = 0            // 开仓后经过的K线数
-var int close_above_entry_count = 0     // 收盘价大于开仓价的次数
-var float highest_in_8_bars = na        // 开仓后8根K线的最高价
+var int close_above_entry_count = 0     // 收盘价大于开仓价的次数（累计计数）
+var float highest_in_8_bars = na        // 开仓后8根K线的最高价（可选止损）
+
+// 订单成交追踪
+var bool order_1_filled = false         // Short_1是否成交
+var bool order_2_filled = false         // Short_2是否成交
+var float entry_price_1 = na            // Short_1的成交价格
+var float entry_price_2 = na            // Short_2的成交价格
+var float entry_qty_1 = 0.0             // Short_1的持仓数量
+var float entry_qty_2 = 0.0             // Short_2的持仓数量
 
 // ============================================================================
 // 第四部分: 交易逻辑
 // ============================================================================
 
-// 步骤1: 检测多头趋势并记录状态
-if is_uptrend and uptrend_state == 0
-    uptrend_state := 1
-    // 重置下穿相关变量
-    bars_since_crossdown := 0
-    highest_price_since_crossdown := na
-    highest_price_kline := na
-    bars_since_highest := 0
+// 步骤1: 检测并记录曾经处于多头趋势的状态（可以重复触发）
+if is_uptrend
+    // 即使策略运行中（uptrend_state == 2或已开仓），如果重新出现多头趋势，可以重新记录状态
+    if uptrend_state == 0
+        uptrend_state := 1
+        // 重置下穿相关变量
+        bars_since_crossdown := 0
+        highest_price_since_crossdown := na
+        highest_price_kline := na
+        bars_since_highest := 0
+    else if uptrend_state == 2
+        // 策略运行中，重新出现多头趋势，可以重新记录状态（允许重复触发）
+        uptrend_state := 1
+        // 注意：不重置记录状态，保留当前记录，等待新的下穿触发
 
 // 如果形成空头趋势，重置状态
 if is_downtrend
@@ -70,7 +85,7 @@ if is_downtrend
     highest_price_kline := na
     bars_since_highest := 0
 
-// 步骤2: 在多头趋势中，检测EMA12第一次下穿EMA565
+// 步骤2: 在多头趋势中，检测EMA12第一次下穿EMA565（可以重复触发）
 // 下穿时状态：ema12 < ema565 < ema144（不是空头趋势）
 // 空头趋势是：ema12 < ema144 < ema565
 if uptrend_state == 1 and ema12_crossdown_565
@@ -81,21 +96,36 @@ if uptrend_state == 1 and ema12_crossdown_565
         highest_price_since_crossdown := high
         highest_price_kline := high
         bars_since_highest := 0
+        
+        // 如果之前已经挂限价单但未成交，取消旧订单（允许重复触发）
+        if na(entry_price) and strategy.position_size == 0
+            strategy.cancel("Short_1")
+            strategy.cancel("Short_2")
 
 // 步骤3: 下穿后记录最高价
 // 如果变成空头趋势（ema12 < ema144 < ema565），则重置状态
 if uptrend_state == 2
     // 检查是否变成空头趋势
     if is_downtrend
-        uptrend_state := 0
-        bars_since_crossdown := 0
-        highest_price_since_crossdown := na
-        highest_price_kline := na
-        bars_since_highest := 0
+        // 如果已开仓，保留持仓，只重置记录状态
+        if not na(entry_price) and strategy.position_size < 0
+            // 保留持仓，只重置记录状态
+            uptrend_state := 0
+            bars_since_crossdown := 0
+            highest_price_since_crossdown := na
+            highest_price_kline := na
+            bars_since_highest := 0
+        else
+            // 未开仓，完全重置
+            uptrend_state := 0
+            bars_since_crossdown := 0
+            highest_price_since_crossdown := na
+            highest_price_kline := na
+            bars_since_highest := 0
     else
         bars_since_crossdown += 1
         
-        // 更新下穿后的最高价
+        // 更新下穿后的最高价（记录K线的最高价）
         if na(highest_price_since_crossdown) or high > highest_price_since_crossdown
             highest_price_since_crossdown := high
             highest_price_kline := high
@@ -103,7 +133,8 @@ if uptrend_state == 2
         else
             bars_since_highest += 1
         
-        // 当超过42根K线，最高价没变化，则在低于最高价1%、2%的位置开单（不包括原价）
+        // 当超过42根K线，最高价没变化，则在低于最高价1%、2%的位置开单
+        // 注意：如果已开仓，不再开新单（保留已开仓的持仓）
         if bars_since_highest >= 42 and na(entry_price) and strategy.position_size == 0
             // 在两个位置开单：低于最高价1%和2%
             price_1 = highest_price_since_crossdown * (1 - 0.01)  // 低于最高价1%
@@ -119,10 +150,30 @@ if uptrend_state == 2
                       "\n价格2(-2%):" + str.tostring(price_2, "#.##"), 
                       yloc=yloc.abovebar, color=color.orange, textcolor=color.white, style=label.style_label_down)
 
-// 检测开仓成交：当limit订单成交时，strategy.position_size会变为负值
+// 检测开仓成交：使用strategy.position_avg_price来检测订单成交
+// 当有持仓且entry_price还是na时，说明订单刚成交
 if na(entry_price) and strategy.position_size < 0
-    // 记录开仓价格（使用当前收盘价）
-    entry_price := close
+    // 使用平均成本价作为开仓价格（strategy.position_avg_price会自动计算加权平均）
+    entry_price := strategy.position_avg_price
+    total_position_size := math.abs(strategy.position_size)
+    
+    // 尝试分别检测两个订单的成交价格
+    // 如果价格达到限价单价格，记录为该订单的成交价格
+    if uptrend_state == 2 and not na(highest_price_since_crossdown)
+        price_1 = highest_price_since_crossdown * (1 - 0.01)
+        price_2 = highest_price_since_crossdown * (1 - 0.02)
+        
+        // 检查价格是否接近限价单价格（容差0.1%）
+        if math.abs(close - price_1) / price_1 < 0.001 or math.abs(strategy.position_avg_price - price_1) / price_1 < 0.001
+            entry_price_1 := strategy.position_avg_price
+            entry_qty_1 := math.abs(strategy.position_size)
+            order_1_filled := true
+        
+        if math.abs(close - price_2) / price_2 < 0.001 or (order_1_filled and math.abs(strategy.position_size) > entry_qty_1)
+            entry_price_2 := strategy.position_avg_price
+            entry_qty_2 := math.abs(strategy.position_size) - entry_qty_1
+            order_2_filled := true
+    
     entry_highest_price := high
     bars_since_entry := 0
     close_above_entry_count := 0
@@ -135,7 +186,7 @@ if not na(entry_price) and strategy.position_size < 0
     if na(entry_highest_price) or high > entry_highest_price
         entry_highest_price := high
     
-    // 记录收盘价大于开仓价的次数
+    // 记录收盘价大于开仓价的次数（累计计数，不重置）
     if close > entry_price
         close_above_entry_count += 1
     
@@ -143,28 +194,42 @@ if not na(entry_price) and strategy.position_size < 0
     if close_above_entry_count > 4 and close < entry_price
         strategy.close_all(comment="站稳后低于成本平仓")
         entry_price := na
+        total_position_size := 0.0
         entry_highest_price := na
         bars_since_entry := 0
         close_above_entry_count := 0
         highest_in_8_bars := na
+        order_1_filled := false
+        order_2_filled := false
+        entry_price_1 := na
+        entry_price_2 := na
+        entry_qty_1 := 0.0
+        entry_qty_2 := 0.0
     
-    // 逻辑2和3: 8根K线内的处理
-    if bars_since_entry <= 8
-        // 8根K线内不设置止损，等待逻辑1的条件触发平仓
-        // 如果到第8根K线还没平仓，强制平仓
-        if bars_since_entry == 8 and strategy.position_size < 0
-            strategy.close_all(comment="8根K线后强制平仓")
-            entry_price := na
-            entry_highest_price := na
-            bars_since_entry := 0
-            close_above_entry_count := 0
-            highest_in_8_bars := na
-    else
-        // 逻辑3: 如果记录超出8根k线（说明没有被强制平仓），就取8根k线中最高的价格，作为止损
-        if strategy.position_size < 0
-            // 计算最近8根K线的最高价
+    // 逻辑2: 8根K线内站稳现价平仓
+    if bars_since_entry <= 8 and close_above_entry_count > 4 and close >= entry_price
+        // 8根K线内如果站稳了，但价格一直没低于成本，直接现价平仓
+        strategy.close_all(comment="8根K线内站稳现价平仓")
+        entry_price := na
+        total_position_size := 0.0
+        entry_highest_price := na
+        bars_since_entry := 0
+        close_above_entry_count := 0
+        highest_in_8_bars := na
+        order_1_filled := false
+        order_2_filled := false
+        entry_price_1 := na
+        entry_price_2 := na
+        entry_qty_1 := 0.0
+        entry_qty_2 := 0.0
+    
+    // 逻辑3: 未站稳继续持有（一直持有直到触发止盈条件）
+    if close_above_entry_count <= 4
+        // 未站稳，一直持有仓位，直到触发止盈条件
+        // 可以设置止损作为保护（可选）
+        if bars_since_entry > 8
+            // 超过8根K线后，可以设置止损作为保护
             highest_in_8_bars := ta.highest(high, 8)
-            // 设置止损
             strategy.exit("SL_8bars", stop=highest_in_8_bars)
 
 // 步骤5: 止盈逻辑 - 如果出现空头趋势，在开仓价格的10%、20%、26%的地方止盈
@@ -177,32 +242,60 @@ if not na(entry_price) and strategy.position_size < 0 and is_downtrend
     if close <= tp3_price
         strategy.close_all(comment="TP3 26%")
         entry_price := na
+        total_position_size := 0.0
         entry_highest_price := na
         bars_since_entry := 0
         close_above_entry_count := 0
         highest_in_8_bars := na
+        order_1_filled := false
+        order_2_filled := false
+        entry_price_1 := na
+        entry_price_2 := na
+        entry_qty_1 := 0.0
+        entry_qty_2 := 0.0
     else if close <= tp2_price
         strategy.close_all(comment="TP2 20%")
         entry_price := na
+        total_position_size := 0.0
         entry_highest_price := na
         bars_since_entry := 0
         close_above_entry_count := 0
         highest_in_8_bars := na
+        order_1_filled := false
+        order_2_filled := false
+        entry_price_1 := na
+        entry_price_2 := na
+        entry_qty_1 := 0.0
+        entry_qty_2 := 0.0
     else if close <= tp1_price
         strategy.close_all(comment="TP1 10%")
         entry_price := na
+        total_position_size := 0.0
         entry_highest_price := na
         bars_since_entry := 0
         close_above_entry_count := 0
         highest_in_8_bars := na
+        order_1_filled := false
+        order_2_filled := false
+        entry_price_1 := na
+        entry_price_2 := na
+        entry_qty_1 := 0.0
+        entry_qty_2 := 0.0
 
 // 如果持仓被平掉，重置相关变量
 if strategy.position_size == 0 and not na(entry_price)
     entry_price := na
+    total_position_size := 0.0
     entry_highest_price := na
     bars_since_entry := 0
     close_above_entry_count := 0
     highest_in_8_bars := na
+    order_1_filled := false
+    order_2_filled := false
+    entry_price_1 := na
+    entry_price_2 := na
+    entry_qty_1 := 0.0
+    entry_qty_2 := 0.0
 
 // ============================================================================
 // 第五部分: 可视化

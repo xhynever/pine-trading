@@ -1,0 +1,116 @@
+//@version=5
+strategy("4H Sharp Decline Rebound Short Strategy",
+         overlay=true,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=20)
+
+// ============= EMA计算函数 =============
+ema12 = ta.ema(close, 12)
+ema140 = ta.ema(close, 140)
+ema156 = ta.ema(close, 156)
+ema565 = ta.ema(close, 565)
+ema676 = ta.ema(close, 676)
+
+// ============= 空头趋势检测 =============
+downtrend_signal = ema12 < math.min(ema140, ema156) and
+                   math.min(ema140, ema156) < math.min(ema565, ema676)
+
+// ============= 一周内跌幅检测（42根4H K线 ≈ 7天） =============
+lookback_period = 42  // 一周的4H K线数量（7天 * 6根/天）
+highest_price = ta.highest(high, lookback_period)
+lowest_price = ta.lowest(low, lookback_period)
+decline_percent = (highest_price - lowest_price) / highest_price * 100
+
+// 曾经满足跌幅条件：一周内跌幅超过10%
+sharp_decline_occurred = decline_percent >= 10.0
+
+// 使用var变量记录是否曾经满足过条件（一旦满足就保持为true，直到开单或趋势消失）
+var bool has_sharp_decline = false
+if not has_sharp_decline and downtrend_signal and sharp_decline_occurred
+    has_sharp_decline := true
+
+// ============= 信号标记变量 =============
+var bool kong_signal_ready = false
+var float entry_price = 0.0
+var array<float> highprice = array.new<float>()
+var array<float> lowprice = array.new<float>()
+var float trailing_stop = 0.0
+var bool short_entered = false
+
+// ============= 价格记录和移动止损 =============
+// 开仓时清空价格数组
+if strategy.position_size[1] == 0 and strategy.position_size < 0
+    array.clear(highprice)
+    array.clear(lowprice)
+
+// 仅在空单持仓期间记录价格
+if strategy.position_size < 0
+    if close > ema12
+        array.push(highprice, close)
+    else
+        array.push(lowprice, close)
+
+    total_count = array.size(highprice) + array.size(lowprice)
+    if total_count > 8
+        if array.size(highprice) > array.size(lowprice)
+            trailing_stop := entry_price
+        else
+            highprice_sum = 0.0
+            for i = 0 to array.size(highprice) - 1
+                highprice_sum += array.get(highprice, i)
+            trailing_stop := highprice_sum / array.size(highprice)
+
+// ============= 空单逻辑（剧烈下跌后反弹做空） =============
+// 信号准备条件：空头趋势 + 曾经满足一周内10%以上跌幅
+if not kong_signal_ready and downtrend_signal and has_sharp_decline
+    kong_signal_ready := true
+
+// 入场条件：已准备信号 + 现价上穿EMA140 + 无持仓
+if kong_signal_ready and strategy.position_size == 0
+    if ta.crossover(close, ema140)
+        entry_price := close  // 在价格上穿EMA140时的收盘价开空
+        strategy.entry("Short1", strategy.short, qty=0.5)
+        strategy.entry("Short2", strategy.short, qty=0.5)
+        kong_signal_ready := false  // 开单后立即重置，确保只触发一次
+        has_sharp_decline := false  // 重置跌幅标记，等待下一次剧烈下跌
+        short_entered := true
+
+if short_entered and strategy.position_size != 0
+    short_entered := false
+
+// 趋势消失时重置信号
+if not downtrend_signal
+    kong_signal_ready := false
+    has_sharp_decline := false
+
+// ============= 止盈止损 =============
+if strategy.position_size < 0
+    if close < entry_price * 0.75
+        strategy.close("Short1")
+        strategy.close("Short2")
+    else if close < entry_price * 0.85
+        strategy.close("Short1")
+        strategy.close("Short2")
+    else if close < entry_price * 0.90
+        strategy.close("Short1")
+        strategy.close("Short2")
+
+    strategy.exit("SL Short", "Short1", stop=entry_price * 1.05)
+    strategy.exit("SL Short", "Short2", stop=entry_price * 1.05)
+
+// ============= 绘制指标 =============
+plot(ema12, "EMA12", color.yellow, linewidth=1)
+plot(ema140, "EMA140", color.blue, linewidth=2)  // 加粗显示关键均线
+plot(ema156, "EMA156", color.blue, linewidth=1)
+plot(ema565, "EMA565", color.purple, linewidth=1)
+plot(ema676, "EMA676", color.purple, linewidth=1)
+
+// 标记入场和平仓
+plotshape(short_entered, title="Short Entry", style=shape.circle, location=location.belowbar, color=color.red, size=size.small)
+
+// 平仓标记
+plotshape(strategy.position_size[1] < 0 and strategy.position_size == 0, title="Short Exit", style=shape.xcross, location=location.belowbar, color=color.red, size=size.small)
+
+// 显示跌幅信息（用于调试）
+plotshape(kong_signal_ready, title="Signal Ready", style=shape.triangleup, location=location.belowbar, color=color.orange, size=size.tiny)
+
